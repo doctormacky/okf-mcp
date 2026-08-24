@@ -1,0 +1,903 @@
+"use strict";
+
+const path = require("path");
+const fs = require("fs");
+const { isDeepStrictEqual } = require("node:util");
+const yaml = require("js-yaml");
+const { parseMarkdownText, normalizeSlashes } = require("./parser");
+const {
+  bundleExcludesPath,
+  conceptMatchSummary,
+  findConceptMatches,
+  resolveLinkPath,
+  semanticReferences,
+} = require("./indexer");
+const {
+  isExternalReference,
+  isLocalAssetReference,
+  resolveBundleAssetPath,
+} = require("./assets");
+const { buildV02MigrationPlan, checkV02Migration } = require("./migration");
+const { validateIndex } = require("./validation");
+
+const COMPUTATION_FIELDS = new Set(["runtime", "parameters", "computation", "executor", "attester"]);
+
+function slug(value, fallback) {
+  const text = String(value || fallback || "concept").trim().toLowerCase();
+  return text
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || String(fallback || "concept");
+}
+
+function isConfiguredGeneratorOutput(project, absolutePath) {
+  return Boolean(project && project.root && absolutePath && (project.plugins || []).some((plugin) => {
+    if (!plugin || !plugin.output) return false;
+    const relative = path.relative(path.resolve(project.root, String(plugin.output)), absolutePath);
+    return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+  }));
+}
+
+function normalizeConceptPath(value) {
+  const raw = normalizeSlashes(String(value || "").trim());
+  if (!raw) {
+    throw new Error("Concept path is required.");
+  }
+  if (raw.startsWith("/") || /^[A-Za-z]:\//.test(raw) || /[\u0000-\u001f\u007f]/.test(raw)) {
+    throw new Error("Concept path must be a safe relative path.");
+  }
+  const rawParts = raw.split("/");
+  if (rawParts.some((part) => !part || part === "." || part === ".." || part.startsWith("."))) {
+    throw new Error("Concept path must be a safe relative path without empty, hidden, dot, or parent segments.");
+  }
+  if (rawParts.slice(0, -1).some((part) => part.toLowerCase().endsWith(".md"))) {
+    throw new Error("Concept path cannot place a Markdown file inside another Markdown path.");
+  }
+  const normalized = path.posix.normalize(raw);
+  if (!normalized || normalized === "." || normalized.startsWith("../") || normalized === "..") {
+    throw new Error("Concept path must stay inside the bundle.");
+  }
+  if (normalized.split("/").some((part) => !part || part === "." || part === "..")) {
+    throw new Error("Concept path contains an unsafe segment.");
+  }
+  if (!normalized.toLowerCase().endsWith(".md")) {
+    throw new Error("Concept path must end with .md.");
+  }
+  const base = path.posix.basename(normalized).toLowerCase();
+  if (base === "index.md" || base === "log.md") {
+    throw new Error("Concept path cannot be a reserved index.md or log.md file.");
+  }
+  return normalized;
+}
+
+function deriveConceptPathSuggestion(index, bundle, input) {
+  const rawPrefix = input && input.prefix
+    ? normalizeSlashes(String(input.prefix).trim())
+    : "";
+  if (rawPrefix.startsWith("/") || /^[A-Za-z]:\//.test(rawPrefix)) {
+    throw new Error("Path prefix must be a safe relative path inside the bundle.");
+  }
+  const prefix = rawPrefix.replace(/\/+$/g, "");
+  if (prefix) {
+    normalizeConceptPath(`${prefix}/placeholder.md`);
+  }
+  const type = String((input && input.type) || "").trim();
+  const typePart = type === "Attested Computation"
+    ? "computations"
+    : slug(type, "concept");
+  const titlePart = slug(input && input.title, typePart);
+  let parent = prefix ? `${prefix}/${typePart}` : typePart;
+  let strategy = prefix ? "explicit_prefix" : "type_slug";
+  let evidence = { matchingConcepts: 0, dominantDirectoryCount: 0, dominantDirectoryRatio: 0 };
+
+  if (type !== "Attested Computation" && index) {
+    const matching = findConceptMatches(index, {
+      bundle: bundle.id,
+      type,
+      pathPrefix: prefix,
+    });
+    const counts = new Map();
+    matching.forEach((document) => {
+      const directory = path.posix.dirname(document.path);
+      const normalizedDirectory = directory === "." ? "" : directory;
+      counts.set(normalizedDirectory, (counts.get(normalizedDirectory) || 0) + 1);
+    });
+    const dominant = Array.from(counts.entries()).sort((left, right) => (
+      right[1] - left[1] || left[0].localeCompare(right[0])
+    ))[0];
+    const dominantCount = dominant ? dominant[1] : 0;
+    const ratio = matching.length ? dominantCount / matching.length : 0;
+    evidence = {
+      matchingConcepts: matching.length,
+      dominantDirectoryCount: dominantCount,
+      dominantDirectoryRatio: Number(ratio.toFixed(3)),
+    };
+    if (dominant && dominantCount >= 2 && ratio >= 0.6) {
+      parent = dominant[0];
+      strategy = "dominant_same_type_directory";
+      evidence.dominantDirectory = dominant[0] || ".";
+    }
+  }
+
+  return {
+    path: normalizeConceptPath([parent, `${titlePart}.md`].filter(Boolean).join("/")),
+    strategy,
+    evidence,
+  };
+}
+
+function renderFrontmatter(frontmatter) {
+  const values = Object.fromEntries(
+    Object.entries(frontmatter || {}).filter((entry) => entry[1] !== undefined),
+  );
+  return yaml.dump(values, {
+    schema: yaml.CORE_SCHEMA,
+    noRefs: true,
+    lineWidth: -1,
+    sortKeys: false,
+  }).trimEnd();
+}
+
+function renderConceptMarkdown(input) {
+  const frontmatter = Object.assign({}, input && input.frontmatter ? input.frontmatter : {});
+  const body = String((input && input.body) || "").replace(/\r\n/g, "\n").trim();
+  return [
+    "---",
+    renderFrontmatter(frontmatter),
+    "---",
+    "",
+    body || `# ${frontmatter.title || path.posix.basename(input.path || "concept.md", ".md")}`,
+    "",
+  ].join("\n");
+}
+
+function relationFrom(value, doc) {
+  if (typeof value === "string") {
+    const parts = value.trim().split(/\s+/);
+    if (parts.length === 1) {
+      return { type: "related_to", target: parts[0], source: doc.uri };
+    }
+    return { type: parts[0], target: parts.slice(1).join(" "), source: doc.uri };
+  }
+  if (value && typeof value === "object") {
+    return {
+      type: value.type || value.kind || "related_to",
+      target: value.target || value.to || "",
+      source: doc.uri,
+      label: value.label || value.text || "",
+      description: value.description || "",
+    };
+  }
+  return { type: "related_to", target: "", source: doc.uri };
+}
+
+class ConceptAuthoringService {
+  constructor(store) {
+    this.store = store;
+  }
+
+  getBundle(id) {
+    const bundles = this.store.getBundles().filter((entry) => !entry.remote);
+    const bundle = id
+      ? bundles.find((entry) => entry.id === id)
+      : bundles.length === 1
+        ? bundles[0]
+        : null;
+    if (!bundle) {
+      throw new Error(id
+        ? `Unknown writable OKF bundle: ${id}`
+        : "A bundle id is required unless exactly one writable OKF root is configured.");
+    }
+    return bundle;
+  }
+
+  suggestConceptPath(input) {
+    const bundle = this.getBundle(input && input.bundle);
+    const index = this.store.getIndex();
+    const suggestion = deriveConceptPathSuggestion(index, bundle, input || {});
+    const target = this.store.resolveConceptFile(bundle.id, suggestion.path);
+    const titleMatches = findConceptMatches(index, {
+      bundle: bundle.id,
+      type: input && input.type,
+      title: input && input.title,
+    });
+    const matches = titleMatches.slice(0, 5).map((doc) => conceptMatchSummary(doc));
+    const available = !fs.existsSync(target.absolutePath);
+    const only = matches.length === 1 && matches[0];
+    const generatorOwned = only && (only.generatedFile
+      || only.generatedBy && only.generatedBy.startsWith("process:")
+      || isConfiguredGeneratorOutput(this.store.project, titleMatches[0].absolutePath));
+    return {
+      bundle: bundle.id,
+      path: suggestion.path,
+      uri: `okf://${bundle.id}/${suggestion.path.replace(/\.md$/i, "")}`,
+      absolutePath: target.absolutePath,
+      available,
+      creatable: available && titleMatches.length === 0,
+      titleMatches: matches,
+      titleMatchesOmitted: Math.max(0, titleMatches.length - matches.length),
+      ...(matches.length === 1 ? { existingConcept: matches[0] } : {}),
+      recommendedOperation: titleMatches.length
+        ? titleMatches.length > 1 ? "review_matches"
+          : generatorOwned ? "change_generator" : "update"
+        : available ? "create" : "inspect_existing",
+      strategy: suggestion.strategy,
+      evidence: suggestion.evidence,
+    };
+  }
+
+  validateConcept(input, options) {
+    const bundle = this.getBundle(input && input.bundle);
+    const bundleId = bundle.id;
+    const conceptPath = normalizeConceptPath(input && input.path);
+    const frontmatter = Object.assign({}, input && input.frontmatter ? input.frontmatter : {});
+    const markdown = renderConceptMarkdown({ path: conceptPath, frontmatter, body: input && input.body });
+    const index = this.store.getIndex();
+    const replace = options && options.replace;
+    const errors = [];
+    const warnings = [];
+    let doc = null;
+
+    function isReplacedConcept(existing) {
+      return Boolean(
+        replace
+        && existing
+        && existing.bundle === replace.bundle
+        && existing.path === replace.path,
+      );
+    }
+
+    try {
+      doc = parseMarkdownText(bundle, conceptPath, markdown, `${bundle.root}/${conceptPath}`);
+    } catch (error) {
+      errors.push({ code: "parse_error", bundle: bundleId, path: conceptPath, message: error.message });
+      return { valid: false, bundle: bundleId, path: conceptPath, markdown, errors, warnings };
+    }
+
+    doc.warnings.forEach((warning) => {
+      const entry = Object.assign({ bundle: bundleId }, warning);
+      if (entry.code === "missing_type"
+        || entry.code === "missing_frontmatter"
+        || entry.code === "invalid_id"
+        || entry.layer === "v0.2") {
+        errors.push(entry);
+      } else {
+        warnings.push(entry);
+      }
+    });
+
+    const existingAtPath = index.byUri.get(doc.pathUri);
+    if (existingAtPath && !isReplacedConcept(existingAtPath)) {
+      errors.push({ code: "duplicate_uri", bundle: bundleId, path: conceptPath, uri: doc.pathUri, message: "Concept path already exists." });
+    }
+    const existingAtUri = index.byUri.get(doc.uri);
+    if (existingAtUri && !isReplacedConcept(existingAtUri)) {
+      errors.push({ code: "duplicate_uri", bundle: bundleId, path: conceptPath, uri: doc.uri, message: "Canonical Concept ID already exists." });
+    }
+    if (doc.customId) {
+      const existingAtCustomId = index.byUri.get(doc.customId);
+      if (existingAtCustomId && !isReplacedConcept(existingAtCustomId)) {
+        errors.push({ code: "duplicate_uri", alias: true, bundle: bundleId, path: conceptPath, uri: doc.customId, message: "Custom id alias already exists." });
+      }
+    }
+    if (doc.type === "Attested Computation" && !(options && options.allowComputation)) {
+      errors.push({
+        code: "computation_authoring_requires_capability",
+        bundle: bundleId,
+        path: conceptPath,
+        message: "Attested Computation contracts require the gated computation proposal tool.",
+      });
+    }
+
+    doc.links.forEach((link) => {
+      const resolved = resolveLinkPath(bundle, doc.path, link.href, index.byPathUri);
+      if (!resolved) {
+        return;
+      }
+      if (resolved.outsideRoot) {
+        warnings.push({ code: "link_outside_root", bundle: bundleId, path: doc.path, href: link.href, message: "Markdown link resolves outside bundle root." });
+        return;
+      }
+      const targetPathUri = `okf://${bundleId}/${resolved.path}`;
+      const target = index.byPathUri && index.byPathUri.get(targetPathUri);
+      const targetExists = Boolean(target && target.pathUri === targetPathUri);
+      if (!targetExists && resolved.uri !== doc.uri && resolved.uri !== doc.pathUri) {
+        const entry = { code: "broken_link", bundle: bundleId, path: doc.path, href: link.href, target: resolved.path, message: "Markdown link target does not exist in bundle." };
+        if (this.store.strictLinks) {
+          errors.push(entry);
+        } else {
+          warnings.push(entry);
+        }
+      }
+    });
+
+    semanticReferences(doc).forEach((reference) => {
+      const selfTarget = [doc.uri, doc.pathUri, doc.customId].filter(Boolean).includes(reference.value);
+      if (reference.value.startsWith("okf://")) {
+        const target = index.byUri.get(reference.value);
+        if (!selfTarget && (!target || target.reserved || !target.valid)) {
+          errors.push({
+            code: "broken_semantic_reference",
+            bundle: bundleId,
+            path: doc.path,
+            field: reference.field,
+            target: reference.value,
+            edgeKind: reference.kind,
+            message: "Standard OKF semantic reference does not resolve to a valid concept.",
+          });
+        }
+        return;
+      }
+      if (isExternalReference(reference.value)) {
+        return;
+      }
+      const computationDependency = doc.type === "Attested Computation"
+        && ["computation", "executor", "attester"].includes(reference.kind);
+      if (computationDependency && options && options.allowComputation) {
+        return;
+      }
+      const explicitLocal = isLocalAssetReference(reference.value, {
+        allowBare: reference.kind !== "source",
+      });
+      if (!explicitLocal) {
+        return;
+      }
+      try {
+        const resolved = resolveBundleAssetPath(bundle.root, doc.path, reference.value);
+        if (resolved.path.toLowerCase().endsWith(".md")) {
+          const target = index.byPathUri.get(`okf://${bundleId}/${resolved.path}`);
+          if (!target || target.reserved || !target.valid) {
+            throw new Error("Local Markdown reference does not resolve to a valid concept.");
+          }
+        } else {
+          if (bundleExcludesPath(bundle, resolved.path)) {
+            throw new Error("Local asset reference is excluded by the bundle policy.");
+          }
+          const target = this.store.resolveBundleFile(bundleId, resolved.path);
+          if (!fs.existsSync(target.absolutePath) || !fs.statSync(target.absolutePath).isFile()) {
+            throw new Error("Local asset reference does not resolve to an existing regular file.");
+          }
+        }
+      } catch (error) {
+        errors.push({
+          code: "broken_semantic_reference",
+          bundle: bundleId,
+          path: doc.path,
+          field: reference.field,
+          target: reference.value,
+          edgeKind: reference.kind,
+          message: error.message,
+        });
+      }
+    });
+
+    const relationTypes = new Set(this.store.getRelationTypes().map(String));
+    doc.relations.map((relation) => relationFrom(relation, doc)).forEach((relation) => {
+      const type = String(relation.type || "related_to");
+      const targetUri = String(relation.target || "").trim();
+      if (!targetUri) {
+        errors.push({ code: "missing_relation_target", bundle: bundleId, path: doc.path, relationType: type, message: "Relation has no target." });
+        return;
+      }
+      const safeCustomType = /^[A-Za-z0-9_.-]+$/.test(type);
+      if (!relationTypes.has(type) && !(this.store.allowCustomRelationTypes && safeCustomType)) {
+        errors.push({ code: "invalid_relation_type", bundle: bundleId, path: doc.path, relationType: type, message: `Unsupported relation type: ${type}` });
+      }
+      let target = index.byUri.get(targetUri);
+      let internalTarget = targetUri.startsWith("okf://");
+      if (!target && !/^[A-Za-z][A-Za-z0-9+.-]*:/u.test(targetUri)) {
+        internalTarget = true;
+        const resolved = resolveLinkPath(bundle, doc.path, targetUri, index.byPathUri);
+        if (resolved && !resolved.outsideRoot) {
+          const pathUri = `okf://${bundleId}/${resolved.path}`;
+          target = index.byPathUri.get(pathUri);
+          if (!target && !path.posix.extname(resolved.path)) {
+            target = index.byPathUri.get(`${pathUri}.md`);
+          }
+        }
+      }
+      const selfTarget = targetUri === doc.uri || targetUri === doc.pathUri || targetUri === doc.customId
+        || (target && target.uri === doc.uri);
+      if (internalTarget
+        && !selfTarget
+        && (!target || target.reserved || !target.valid)) {
+        errors.push({ code: "broken_relation", bundle: bundleId, path: doc.path, target: targetUri, relationType: type, message: "Relation target does not resolve to a valid concept." });
+      }
+    });
+
+    return {
+      valid: errors.length === 0,
+      bundle: bundleId,
+      path: conceptPath,
+      uri: doc.uri,
+      pathUri: doc.pathUri,
+      conceptId: doc.conceptId,
+      customId: doc.customId,
+      markdown,
+      concept: {
+        uri: doc.uri,
+        pathUri: doc.pathUri,
+        conceptId: doc.conceptId,
+        customId: doc.customId,
+        type: doc.type,
+        title: doc.title,
+        description: doc.description,
+        tags: doc.tags,
+        aliases: doc.aliases,
+        signals: doc.signals,
+      },
+      signals: doc.signals,
+      errors,
+      warnings,
+    };
+  }
+
+  async proposeConcept(input) {
+    const validation = this.validateConcept(input || {});
+    if (!validation.valid) {
+      return { created: false, validation };
+    }
+    const proposal = await this.store.saveProposal({
+      op: "create",
+      bundle: validation.bundle,
+      path: validation.path,
+      frontmatter: Object.assign({}, input.frontmatter || {}),
+      body: String(input.body || ""),
+      markdown: validation.markdown,
+      message: input.message || "",
+      migrationId: input.migrationId || null,
+      validation,
+    });
+    return { created: true, proposal };
+  }
+
+  resolveConcept(uri) {
+    const index = this.store.getIndex();
+    const existing = uri ? index.byUri.get(uri) : null;
+    if (!existing || existing.reserved || !existing.valid) {
+      throw new Error(`Unknown valid OKF concept: ${uri || "<missing>"}`);
+    }
+    this.getBundle(existing.bundle);
+    return existing;
+  }
+
+  validateUpdateCandidate(input, existing) {
+    const existingComputation = existing.type === "Attested Computation";
+    const candidateFrontmatter = input.frontmatter || {};
+    const computationContractChanged = existingComputation && (
+      candidateFrontmatter.type !== existing.frontmatter.type
+      || String(input.body || "") !== String(existing.body || "")
+      || Array.from(COMPUTATION_FIELDS).some((field) => (
+        !isDeepStrictEqual(candidateFrontmatter[field], existing.frontmatter[field])
+      ))
+    );
+    const validation = this.validateConcept({
+      bundle: existing.bundle,
+      path: existing.path,
+      frontmatter: candidateFrontmatter,
+      body: input.body,
+    }, {
+      allowComputation: existingComputation && !computationContractChanged,
+      replace: {
+        bundle: existing.bundle,
+        path: existing.path,
+      },
+    });
+    if (computationContractChanged) {
+      validation.errors.push({
+        code: "immutable_computation_contract",
+        bundle: existing.bundle,
+        path: existing.path,
+        uri: existing.uri,
+        message: "Generic updates cannot change an existing Attested Computation contract or body.",
+      });
+      validation.valid = false;
+    }
+    if (validation.uri !== existing.uri) {
+      validation.errors.push({
+        code: "immutable_uri",
+        bundle: existing.bundle,
+        path: existing.path,
+        uri: validation.uri,
+        message: "Concept updates cannot change the existing concept URI.",
+      });
+      validation.valid = false;
+    }
+    if (validation.customId !== existing.customId) {
+      validation.errors.push({
+        code: "immutable_uri",
+        detailCode: "immutable_custom_id_alias",
+        bundle: existing.bundle,
+        path: existing.path,
+        uri: validation.customId,
+        message: "Concept updates cannot change the existing custom id alias.",
+      });
+      validation.valid = false;
+    }
+    return validation;
+  }
+
+  async proposeUpdate(input) {
+    const uri = input && input.uri;
+    if (!uri) {
+      throw new Error("okf_propose_update requires uri.");
+    }
+    const existing = this.resolveConcept(uri);
+    const patch = input && input.frontmatter === undefined ? {} : input.frontmatter;
+    if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
+      throw new Error("frontmatter must be an object when provided.");
+    }
+    const removeKeys = input && input.removeFrontmatterKeys === undefined
+      ? []
+      : input.removeFrontmatterKeys;
+    if (!Array.isArray(removeKeys) || removeKeys.some((key) => typeof key !== "string" || !key.trim())) {
+      throw new Error("removeFrontmatterKeys must be an array of non-empty strings.");
+    }
+    if (removeKeys.includes("id")) {
+      throw new Error("Concept updates cannot remove the existing concept id.");
+    }
+    const hasBody = Boolean(input && Object.prototype.hasOwnProperty.call(input, "body"));
+    const touchesComputationContract = Object.keys(patch).some((key) => COMPUTATION_FIELDS.has(key))
+      || removeKeys.some((key) => COMPUTATION_FIELDS.has(key))
+      || (Object.prototype.hasOwnProperty.call(patch, "type") && patch.type !== existing.type)
+      || (existing.type === "Attested Computation" && hasBody);
+    if (patch.type === "Attested Computation" && existing.type !== "Attested Computation"
+      || touchesComputationContract) {
+      throw new Error("Generic updates cannot create or modify Attested Computation contracts or code.");
+    }
+    if (!Object.keys(patch).length && !removeKeys.length && !hasBody) {
+      throw new Error("okf_propose_update requires a frontmatter change, a removed key, or a body replacement.");
+    }
+    const frontmatter = Object.assign({}, existing.frontmatter, patch);
+    removeKeys.forEach((key) => {
+      delete frontmatter[key];
+    });
+    const body = hasBody ? String(input.body || "") : existing.body;
+    const validation = this.validateUpdateCandidate({ frontmatter, body }, existing);
+    if (!validation.valid) {
+      return { created: false, op: "update", validation };
+    }
+    const proposal = await this.store.saveProposal({
+      op: "update",
+      targetUri: existing.uri,
+      targetPathUri: existing.pathUri,
+      baseRevision: this.store.getContentRevision(existing.text),
+      bundle: validation.bundle,
+      path: validation.path,
+      frontmatter,
+      body,
+      markdown: validation.markdown,
+      message: input.message || "",
+      migrationId: input.migrationId || null,
+      validation,
+    });
+    return { created: true, op: "update", proposal };
+  }
+
+  validateAttestedComputation(input, options) {
+    const bundle = this.getBundle(input && input.bundle);
+    const candidate = Object.assign({}, input || {}, { bundle: bundle.id });
+    const assetFiles = Array.isArray(options && options.assetFiles) ? options.assetFiles : [];
+    const validation = this.validateConcept(candidate, { allowComputation: true });
+    if (!validation.concept || validation.concept.type !== "Attested Computation") {
+      validation.errors.push({
+        code: "invalid_computation_type",
+        bundle: candidate.bundle,
+        path: candidate.path,
+        message: "Atomic computation proposals require type: Attested Computation.",
+      });
+    }
+    const frontmatter = candidate.frontmatter || {};
+    const normalizedAssetFiles = [];
+    const dependencyRevisions = new Map();
+    const recordDependency = (field, target, dependencyBundle) => {
+      const stat = fs.statSync(target.absolutePath);
+      if (!stat.isFile()) {
+        throw new Error(`Referenced ${field} dependency is not a regular file.`);
+      }
+      if (stat.size > 1024 * 1024) {
+        throw new Error(`Referenced ${field} dependency exceeds the 1 MiB review limit.`);
+      }
+      const content = fs.readFileSync(target.absolutePath);
+      if (content.length > 1024 * 1024) {
+        throw new Error(`Referenced ${field} dependency exceeded the 1 MiB review limit while being read.`);
+      }
+      const bundleId = dependencyBundle || candidate.bundle;
+      const key = `${field}\u0000${bundleId}\u0000${target.relativePath}`;
+      dependencyRevisions.set(key, {
+        field,
+        bundle: bundleId,
+        path: target.relativePath,
+        bytes: content.length,
+        revision: this.store.getContentRevision(content),
+      });
+    };
+    assetFiles.forEach((asset, index) => {
+      if (!asset || typeof asset !== "object" || Array.isArray(asset) || typeof asset.content !== "string") {
+        validation.errors.push({ code: "invalid_computation_asset", index, message: "Computation asset entries require path and text content." });
+        return;
+      }
+      try {
+        const target = this.store.resolveBundleFile(candidate.bundle, asset.path);
+        if (!asset.content.trim()) {
+          throw new Error("Computation asset content must be non-empty text.");
+        }
+        if (Buffer.byteLength(asset.content, "utf8") > 1024 * 1024) {
+          throw new Error("Computation asset exceeds the 1 MiB proposal limit.");
+        }
+        normalizedAssetFiles.push({ path: target.relativePath, content: asset.content });
+      } catch (error) {
+        validation.errors.push({ code: "invalid_computation_asset_path", index, path: asset.path, message: error.message });
+      }
+    });
+    const computation = validation.signals && validation.signals.computation;
+    if (computation && computation.computation && computation.computation.mode === "file") {
+      const rawPath = computation.computation.path;
+      const resolvedPath = rawPath.startsWith("/")
+        ? path.posix.normalize(rawPath.slice(1))
+        : path.posix.normalize(path.posix.join(path.posix.dirname(validation.path), rawPath));
+      if (resolvedPath.startsWith("../") || resolvedPath === "..") {
+        validation.errors.push({ code: "computation_asset_outside_root", path: rawPath, message: "Computation file resolves outside the bundle." });
+      } else if (resolvedPath === validation.path || resolvedPath.toLowerCase().endsWith(".md")) {
+        validation.errors.push({
+          code: "invalid_computation_asset_target",
+          path: rawPath,
+          message: "A file computation must target a distinct non-Markdown bundle asset.",
+        });
+      } else {
+        const proposed = normalizedAssetFiles.filter((asset) => asset.path === resolvedPath);
+        if (normalizedAssetFiles.length && (proposed.length !== 1 || normalizedAssetFiles.length !== 1)) {
+          validation.errors.push({ code: "computation_asset_mismatch", path: rawPath, message: "The coordinated proposal may contain only the declared computation file." });
+        }
+        if (!proposed.length) {
+          try {
+            const existing = this.store.resolveBundleFile(candidate.bundle, resolvedPath);
+            if (!fs.existsSync(existing.absolutePath) || !fs.statSync(existing.absolutePath).isFile()) {
+              throw new Error("Declared computation file does not exist and was not included in the proposal.");
+            }
+            recordDependency("computation", existing, candidate.bundle);
+          } catch (error) {
+            validation.errors.push({ code: "missing_computation_asset", path: rawPath, message: error.message });
+          }
+        }
+      }
+    } else if (normalizedAssetFiles.length) {
+      validation.errors.push({ code: "unexpected_computation_asset", message: "Inline computations cannot include an external computation asset." });
+    }
+    const dependencyIndex = this.store.getIndex();
+    ["executor", "attester"].forEach((field) => {
+      const value = frontmatter[field] && frontmatter[field].resource;
+      if (typeof value !== "string") {
+        return;
+      }
+      if (value.startsWith("okf://")) {
+        const selfUris = [validation.uri, validation.pathUri, validation.customId].filter(Boolean);
+        const targetDocument = dependencyIndex.byUri.get(value);
+        if (selfUris.includes(value) || !targetDocument || targetDocument.reserved || !targetDocument.valid) {
+          validation.errors.push({
+            code: `invalid_${field}_concept`,
+            field: `${field}.resource`,
+            path: value,
+            message: `${field} must reference an existing valid non-reserved concept.`,
+          });
+          return;
+        }
+        try {
+          const target = this.store.resolveBundleFile(targetDocument.bundle, targetDocument.path);
+          recordDependency(field, target, targetDocument.bundle);
+        } catch (error) {
+          validation.errors.push({ code: `missing_${field}_asset`, field: `${field}.resource`, path: value, message: error.message });
+        }
+        return;
+      }
+      if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value)) {
+        return;
+      }
+      const resolvedPath = value.startsWith("/")
+        ? path.posix.normalize(value.slice(1))
+        : path.posix.normalize(path.posix.join(path.posix.dirname(validation.path), value));
+      try {
+        const target = this.store.resolveBundleFile(candidate.bundle, resolvedPath);
+        if (!fs.existsSync(target.absolutePath) || !fs.statSync(target.absolutePath).isFile()) {
+          throw new Error(`${field} resource does not exist.`);
+        }
+        if (resolvedPath.toLowerCase().endsWith(".md")) {
+          const targetDocument = dependencyIndex.byPathUri.get(`okf://${candidate.bundle}/${resolvedPath}`);
+          if (!targetDocument || targetDocument.reserved || !targetDocument.valid) {
+            throw new Error(`${field} Markdown resource must resolve to a valid non-reserved concept.`);
+          }
+        }
+        recordDependency(field, target, candidate.bundle);
+      } catch (error) {
+        validation.errors.push({ code: `missing_${field}_asset`, field: `${field}.resource`, path: value, message: error.message });
+      }
+    });
+    validation.assetFiles = normalizedAssetFiles;
+    validation.dependencyRevisions = Array.from(dependencyRevisions.values()).sort((left, right) => (
+      `${left.field}\u0000${left.bundle}\u0000${left.path}`.localeCompare(`${right.field}\u0000${right.bundle}\u0000${right.path}`)
+    ));
+    validation.valid = validation.errors.length === 0;
+    return validation;
+  }
+
+  async proposeAttestedComputation(input) {
+    const validation = this.validateAttestedComputation(input || {}, {
+      assetFiles: input && input.computationPath
+        ? [{ path: input.computationPath, content: String(input.computationContent || "") }]
+        : [],
+    });
+    if (!validation.valid) {
+      return { created: false, validation };
+    }
+    const proposal = await this.store.saveProposal({
+      op: "create_computation",
+      bundle: validation.bundle,
+      path: validation.path,
+      frontmatter: Object.assign({}, input.frontmatter || {}),
+      body: String(input.body || ""),
+      markdown: validation.markdown,
+      assetFiles: validation.assetFiles,
+      dependencyRevisions: validation.dependencyRevisions,
+      message: input.message || "",
+      validation,
+    });
+    return { created: true, proposal };
+  }
+
+  validateReservedIndexMigration(proposal) {
+    const bundle = this.getBundle(proposal.bundle);
+    let doc;
+    const errors = [];
+    try {
+      doc = parseMarkdownText(bundle, "index.md", proposal.markdown, `${bundle.root}/index.md`);
+      errors.push.apply(errors, doc.conformanceDiagnostics || []);
+    } catch (error) {
+      errors.push({ code: "parse_error", bundle: bundle.id, path: "index.md", message: error.message });
+    }
+    const currentIndex = this.store.getIndex();
+    const currentRoot = currentIndex.documents.find((entry) => (
+      entry.bundle === proposal.bundle && entry.path === "index.md"
+    ));
+    const expectedMarkdown = currentRoot ? [
+      "---",
+      renderFrontmatter({ okf_version: "0.2" }),
+      "---",
+      "",
+      String(currentRoot.body || "").replace(/^\s+/, ""),
+    ].join("\n") : null;
+    if (!doc
+      || doc.frontmatter.okf_version !== "0.2"
+      || !proposal.frontmatter
+      || proposal.frontmatter.okf_version !== "0.2"
+      || Object.keys(proposal.frontmatter).some((key) => key !== "okf_version")
+      || proposal.body !== (currentRoot && currentRoot.body)
+      || proposal.markdown !== expectedMarkdown) {
+      errors.push({
+        code: "invalid_migration_version_declaration",
+        bundle: bundle.id,
+        path: "index.md",
+        message: "Migration index acceptance may only add the exact okf_version: 0.2 declaration to the unchanged current root body.",
+      });
+    }
+    const report = checkV02Migration(currentIndex, { bundle: proposal.bundle });
+    errors.push.apply(errors, report.blockers || []);
+    const projectValidation = validateIndex(currentIndex, proposal.bundle);
+    if (!projectValidation.validForProject) {
+      errors.push.apply(errors, projectValidation.diagnostics.filter((entry) => (
+        entry.invalidatesProject || entry.severity === "error"
+      )));
+    }
+    return { valid: errors.length === 0, errors, report, projectValidation, concept: doc || null };
+  }
+
+  async proposeV02Migration(input) {
+    const bundle = this.getBundle(input && input.bundle);
+    const bundleId = bundle.id;
+    const normalizedInput = Object.assign({}, input || {}, { bundle: bundleId });
+    const index = this.store.getIndex();
+    const plan = buildV02MigrationPlan(index, normalizedInput);
+    if (!plan.ready) {
+      return { created: false, plan };
+    }
+    const childValidations = plan.conceptProposals.map((step) => {
+      const existing = this.resolveConcept(step.target.uri);
+      const frontmatter = Object.assign({}, existing.frontmatter, step.arguments.frontmatter);
+      return this.validateUpdateCandidate({ frontmatter, body: existing.body }, existing);
+    });
+    if (childValidations.some((validation) => !validation.valid)) {
+      return { created: false, plan: Object.assign({}, plan, { childValidations }) };
+    }
+    let manifest;
+    const children = [];
+    try {
+      manifest = await this.store.saveMigrationManifest({
+        bundle: bundleId,
+        targetVersion: "0.2",
+        plan,
+        childProposalIds: [],
+      });
+      for (const step of plan.conceptProposals) {
+        const result = await this.proposeUpdate(Object.assign({}, step.arguments, {
+          migrationId: manifest.id,
+          message: `${step.arguments.message} Migration ${manifest.id}. ${normalizedInput.message || ""}`.trim(),
+        }));
+        if (!result.created) {
+          throw new Error(`Failed to create migration child proposal for ${step.target.uri}.`);
+        }
+        children.push(result.proposal);
+        manifest = await this.store.saveMigrationManifest(Object.assign({}, manifest, {
+          childProposalIds: children.map((proposal) => proposal.id),
+          plan,
+        }));
+      }
+      if (plan.versionDeclaration) {
+        const root = index.documents.find((doc) => doc.bundle === bundleId && doc.path === "index.md");
+        if (!root) {
+          throw new Error("Bundle root index.md is required for the v0.2 declaration proposal.");
+        }
+        const markdown = [
+          "---",
+          renderFrontmatter({ okf_version: "0.2" }),
+          "---",
+          "",
+          String(root.body || "").replace(/^\s+/, ""),
+        ].join("\n");
+        const validation = { valid: true, bundle: bundleId, path: "index.md", markdown };
+        const proposal = await this.store.saveProposal({
+          op: "migration_index",
+          bundle: bundleId,
+          path: "index.md",
+          targetUri: root.uri,
+          targetPathUri: root.pathUri,
+          baseRevision: this.store.getContentRevision(root.text),
+          frontmatter: { okf_version: "0.2" },
+          body: root.body,
+          markdown,
+          message: `Declare OKF v0.2 after migration ${manifest.id} child proposals are accepted and validated.`,
+          validation,
+          migrationId: manifest.id,
+          prerequisites: children.map((proposal) => proposal.id),
+        });
+        children.push(proposal);
+      }
+      manifest = await this.store.saveMigrationManifest(Object.assign({}, manifest, {
+        childProposalIds: children.map((proposal) => proposal.id),
+        plan,
+      }));
+      return { created: true, manifest, proposals: children };
+    } catch (error) {
+      children.forEach((proposal) => this.store.removeProposal(proposal.id));
+      if (manifest) {
+        this.store.removeMigrationManifest(manifest.id);
+      }
+      throw error;
+    }
+  }
+
+  async listProposals(input) {
+    return this.store.listProposals(input || {});
+  }
+
+  async getProposal(input) {
+    return this.store.getProposal(input && input.proposalId);
+  }
+
+  async acceptProposal(input) {
+    return this.store.acceptProposal(input && input.proposalId, this, {
+      allowComputation: Boolean(input && input.allowComputation),
+    });
+  }
+
+  async rejectProposal(input) {
+    return this.store.rejectProposal(input && input.proposalId, input && input.reason);
+  }
+}
+
+module.exports = {
+  ConceptAuthoringService,
+  deriveConceptPathSuggestion,
+  isConfiguredGeneratorOutput,
+  normalizeConceptPath,
+  renderConceptMarkdown,
+  renderFrontmatter,
+  slug,
+};

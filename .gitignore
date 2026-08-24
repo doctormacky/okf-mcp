@@ -1,0 +1,14 @@
+node_modules/
+coverage/
+.agents/*
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/okf-v02-migration/
+!.agents/skills/okf-v02-migration/**
+!.agents/skills/okf-knowledge-publisher/
+!.agents/skills/okf-knowledge-publisher/**
+.okf-cache/
+.okf-proposals/
+*.tgz
+npm-debug.log*
+.DS_Store

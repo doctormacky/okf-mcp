@@ -1,0 +1,1225 @@
+"use strict";
+
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const { Readable } = require("stream");
+const test = require("node:test");
+const assert = require("node:assert/strict");
+
+const { buildIndex, buildProjectIndex, buildProjectIndexAsync } = require("../src/indexer");
+const { main: cliMain, parseArgs } = require("../src/cli");
+const { loadProjectConfig } = require("../src/project");
+const { generateProject } = require("../src/plugins");
+const { fetchGitHubBundle, parseGitHubBundleUrl } = require("../src/remote");
+const { ConceptAuthoringService } = require("../src/authoring");
+const { FileConceptStore } = require("../src/store");
+const { createHttpHandler } = require("../src/http-server");
+const { searchConcepts } = require("../src/search");
+const { exportGraph, findPaths, getGraph, getNeighbors, getSubgraph, graphSummary } = require("../src/graph");
+const { callJson, connectMcp } = require("./mcp-client");
+
+function makeFixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "okf-mcp-"));
+  fs.mkdirSync(path.join(root, "specs"), { recursive: true });
+  fs.writeFileSync(path.join(root, "index.md"), "# Fixture\n\n- [Alpha](/specs/alpha.md)\n", "utf8");
+  fs.writeFileSync(path.join(root, "specs", "index.md"), "# Specs\n\n- [Alpha](alpha.md)\n- [Beta](beta.md)\n", "utf8");
+  fs.writeFileSync(path.join(root, "specs", "alpha.md"), [
+    "---",
+    "type: Concept",
+    "title: Alpha",
+    "description: First concept",
+    "tags:",
+    "  - Spec",
+    "  - Endpoint",
+    "priority: 2",
+    "---",
+    "",
+    "# Alpha",
+    "",
+    "Links to [Beta](beta.md).",
+    "",
+  ].join("\n"), "utf8");
+  fs.writeFileSync(path.join(root, "specs", "beta.md"), [
+    "---",
+    "type: Concept",
+    "title: Beta",
+    "description: Second concept",
+    "tags: [spec, report]",
+    "active: true",
+    "---",
+    "",
+    "# Beta",
+    "",
+    "Links to [Missing](missing.md).",
+    "",
+  ].join("\n"), "utf8");
+  fs.writeFileSync(path.join(root, "specs", "bad.md"), [
+    "---",
+    "title: Bad",
+    "---",
+    "",
+    "# Bad",
+    "",
+  ].join("\n"), "utf8");
+  return root;
+}
+
+function makeGitHubFetchMock(files) {
+  const byPath = new Map();
+  files.forEach((file) => byPath.set(file.path, file.text));
+  return async function mockFetch(url) {
+    const textUrl = String(url);
+    if (textUrl.startsWith("https://api.github.com/repos/acme/widgets/commits/")) {
+      return { ok: true, json: async () => ({ sha: "a".repeat(40) }) };
+    }
+    if (textUrl.startsWith("https://api.github.com/repos/acme/widgets/contents/")) {
+      const parsed = new URL(textUrl);
+      const apiPath = decodeURIComponent(parsed.pathname.split("/contents/")[1] || "");
+      const children = files.filter((file) => path.posix.dirname(file.path) === apiPath);
+      const dirs = Array.from(new Set(files
+        .filter((file) => file.path.startsWith(`${apiPath}/`))
+        .map((file) => file.path.slice(apiPath.length + 1).split("/")[0])
+        .filter((part) => part && !children.some((file) => path.posix.basename(file.path) === part))));
+      return {
+        ok: true,
+        json: async () => children.map((file) => ({
+          type: "file",
+          name: path.posix.basename(file.path),
+          path: file.path,
+          size: Buffer.byteLength(file.text),
+          download_url: `https://raw.example/${file.path}`,
+        })).concat(dirs.map((dir) => ({
+          type: "dir",
+          name: dir,
+          path: `${apiPath}/${dir}`,
+        }))),
+      };
+    }
+    if (textUrl.startsWith("https://raw.example/")) {
+      const filePath = textUrl.slice("https://raw.example/".length);
+      return {
+        ok: byPath.has(filePath),
+        status: byPath.has(filePath) ? 200 : 404,
+        statusText: byPath.has(filePath) ? "OK" : "Not Found",
+        text: async () => byPath.get(filePath),
+      };
+    }
+    return { ok: false, status: 404, statusText: "Not Found", json: async () => ({}) };
+  };
+}
+
+test("indexes valid concepts, reserved files, warnings, and links", () => {
+  const root = makeFixture();
+  const index = buildIndex([`fixture=${root}`]);
+  assert.equal(index.concepts.length, 2);
+  assert.equal(index.reserved.length, 2);
+  assert.equal(index.warnings.some((warning) => warning.code === "missing_type" && warning.path === "specs/bad.md"), true);
+  assert.equal(index.warnings.some((warning) => warning.code === "broken_link"), true);
+  assert.equal(index.edges.some((edge) => edge.source.endsWith("/specs/alpha") && edge.target.endsWith("/specs/beta") && !edge.broken), true);
+});
+
+test("structured search supports query, tags, type, path, frontmatter, and links", () => {
+  const root = makeFixture();
+  const index = buildIndex([`fixture=${root}`]);
+  assert.equal(searchConcepts(index, { query: "Alpha" }).total, 1);
+  assert.equal(searchConcepts(index, { tagsAny: ["endpoint"] }).total, 1);
+  assert.equal(searchConcepts(index, { tagsAll: ["spec", "report"] }).total, 1);
+  assert.equal(searchConcepts(index, { types: ["concept"], pathPrefix: "specs/" }).total, 2);
+  assert.equal(searchConcepts(index, { frontmatter: { active: true } }).total, 1);
+  const betaAlias = "okf://fixture/specs/beta.md";
+  const alphaAlias = "okf://fixture/specs/alpha.md";
+  assert.equal(searchConcepts(index, { linkedTo: betaAlias }).results[0].uri, "okf://fixture/specs/alpha");
+  assert.equal(searchConcepts(index, { linkedFrom: alphaAlias }).results[0].uri, "okf://fixture/specs/beta");
+});
+
+test("graph tools expose graph, neighbors, subgraph, paths, summary, and exports", () => {
+  const root = makeFixture();
+  const index = buildIndex([`fixture=${root}`]);
+  const graph = getGraph(index, {});
+  assert.equal(graph.nodes.length, 2);
+  assert.equal(graph.edges.length, 1);
+  const alpha = "okf://fixture/specs/alpha";
+  const beta = "okf://fixture/specs/beta";
+  assert.equal(getNeighbors(index, `${alpha}.md`).outbound.length, 1);
+  assert.equal(getSubgraph(index, { uri: `${alpha}.md`, depth: 1 }).nodes.length, 2);
+  index.edges.push(Object.assign({}, index.edges[0], { kind: "relation", relationType: "related_to" }));
+  assert.deepEqual(findPaths(index, `${alpha}.md`, `${beta}.md`).paths, [[alpha, beta]]);
+  assert.equal(graphSummary(index).concepts, 2);
+  assert.match(exportGraph(index, { format: "dot" }), /digraph OKF/);
+  assert.match(exportGraph(index, { format: "mermaid" }), /graph TD/);
+});
+
+test("duplicate bundle ids are reported instead of mutating stable URIs", () => {
+  const a = makeFixture();
+  const b = makeFixture();
+  const index = buildIndex([`same=${a}`, `same=${b}`]);
+  assert.equal(index.bundles.length, 1);
+  assert.deepEqual(index.bundles.map((bundle) => bundle.id), ["same"]);
+  assert.equal(index.errors.some((error) => error.code === "duplicate_bundle_id"), true);
+});
+
+test("include and exclude filters control indexed Markdown files", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "okf-filter-"));
+  fs.mkdirSync(path.join(root, "keep"), { recursive: true });
+  fs.mkdirSync(path.join(root, "skip"), { recursive: true });
+  fs.writeFileSync(path.join(root, "keep", "alpha.md"), [
+    "---",
+    "type: Concept",
+    "title: Alpha",
+    "---",
+    "",
+    "# Alpha",
+    "",
+  ].join("\n"), "utf8");
+  fs.writeFileSync(path.join(root, "skip", "beta.md"), [
+    "---",
+    "type: Concept",
+    "title: Beta",
+    "---",
+    "",
+    "# Beta",
+    "",
+  ].join("\n"), "utf8");
+  const index = buildIndex([{ id: "fixture", root, include: ["keep/**"], exclude: ["skip/**"] }]);
+  assert.equal(index.concepts.length, 1);
+  assert.equal(index.concepts[0].path, "keep/alpha.md");
+});
+
+test("recursive Markdown globs include bundle-root documents", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "okf-root-glob-"));
+  fs.mkdirSync(path.join(root, "nested"), { recursive: true });
+  fs.writeFileSync(path.join(root, "index.md"), "# Root\n", "utf8");
+  fs.writeFileSync(path.join(root, "nested", "concept.md"), [
+    "---",
+    "type: Concept",
+    "title: Nested",
+    "---",
+    "",
+    "# Nested",
+    "",
+  ].join("\n"), "utf8");
+  const index = buildIndex([{ id: "fixture", root, include: ["**/*.md"] }]);
+  assert.equal(index.documents.some((document) => document.path === "index.md"), true);
+  assert.equal(index.documents.some((document) => document.path === "nested/concept.md"), true);
+});
+
+test("frontmatter can close at EOF and invalid stable ids warn", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "okf-frontmatter-"));
+  fs.writeFileSync(path.join(root, "alpha.md"), [
+    "---",
+    "id: alpha",
+    "type: Concept",
+    "title: Alpha",
+    "---",
+  ].join("\n"), "utf8");
+  const index = buildIndex([`fixture=${root}`]);
+  assert.equal(index.errors.length, 0);
+  assert.equal(index.concepts.length, 1);
+  assert.equal(index.warnings.some((warning) => warning.code === "invalid_id" && warning.bundle === "fixture"), true);
+});
+
+test("path traversal links are warned and not converted to readable edges", () => {
+  const root = makeFixture();
+  fs.writeFileSync(path.join(root, "specs", "alpha.md"), [
+    "---",
+    "type: Concept",
+    "title: Alpha",
+    "---",
+    "",
+    "[Outside](../../outside.md)",
+    "",
+  ].join("\n"), "utf8");
+  const index = buildIndex([`fixture=${root}`]);
+  assert.equal(index.warnings.some((warning) => warning.code === "link_outside_root"), true);
+  assert.equal(index.edges.some((edge) => edge.href === "../../outside.md"), false);
+});
+
+test("project config loads multiple bundles and validates typed cross-bundle relations", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "okf-project-"));
+  const app = path.join(root, "okf", "bundles", "app");
+  const tables = path.join(root, "okf", "bundles", "tables");
+  fs.mkdirSync(path.join(app, "services"), { recursive: true });
+  fs.mkdirSync(path.join(tables, "tables"), { recursive: true });
+  fs.writeFileSync(path.join(root, "okf.project.yaml"), [
+    "project: Fixture",
+    "bundles:",
+    "  - id: app",
+    "    root: okf/bundles/app",
+    "  - id: tables",
+    "    root: okf/bundles/tables",
+    "relationTypes:",
+    "  - verifies",
+    "",
+  ].join("\n"), "utf8");
+  fs.writeFileSync(path.join(app, "services", "alpha.md"), [
+    "---",
+    "id: okf://app/services/alpha",
+    "type: Service",
+    "title: Alpha",
+    "description: Alpha service",
+    "aliases: [alpha-service]",
+    "relations:",
+    "  - type: persists_to",
+    "    target: okf://tables/tables/raw_alpha",
+    "  - type: configured_by",
+    "    target: repo://specs/alpha.json",
+    "---",
+    "",
+    "# Alpha",
+    "",
+  ].join("\n"), "utf8");
+  fs.writeFileSync(path.join(tables, "tables", "raw_alpha.md"), [
+    "---",
+    "id: okf://tables/tables/raw_alpha",
+    "type: Table",
+    "title: raw_alpha",
+    "description: Raw alpha table",
+    "---",
+    "",
+    "# raw_alpha",
+    "",
+  ].join("\n"), "utf8");
+
+  const index = buildProjectIndex(path.join(root, "okf.project.yaml"));
+  assert.equal(index.project.name, "Fixture");
+  assert.equal(index.errors.length, 0);
+  assert.equal(index.bundles.length, 2);
+  assert.equal(index.edges.some((edge) => edge.kind === "relation" && edge.relationType === "persists_to" && edge.target === "okf://tables/tables/raw_alpha"), true);
+  assert.equal(index.externalReferences.length, 1);
+  assert.equal(searchConcepts(index, { query: "alpha-service" }).total, 1);
+  assert.deepEqual(findPaths(index, "okf://app/services/alpha", "okf://tables/tables/raw_alpha").paths, [["okf://app/services/alpha", "okf://tables/tables/raw_alpha"]]);
+  assert.equal(getGraph(index, { includeExternal: true }).nodes.some((node) => node.id === "repo://specs/alpha.json"), true);
+  assert.equal(getNeighbors(index, "okf://app/services/alpha").outbound.some((entry) => entry.node.id === "repo://specs/alpha.json"), false);
+  assert.equal(getNeighbors(index, "okf://app/services/alpha", { includeExternal: true }).outbound.some((entry) => entry.node.id === "repo://specs/alpha.json"), true);
+});
+
+test("published okf-mcp reference bundle is complete, valid, and packaged", () => {
+  const repositoryRoot = path.resolve(__dirname, "..");
+  const index = buildProjectIndex(path.join(repositoryRoot, "okf.project.yaml"));
+  const packageMetadata = JSON.parse(fs.readFileSync(path.join(repositoryRoot, "package.json"), "utf8"));
+
+  assert.equal(index.errors.length, 0);
+  assert.equal(index.warnings.length, 0);
+  assert.equal(index.concepts.length, 14);
+  assert.equal(index.reserved.length, 1);
+  assert.equal(index.byUri.has("okf://okf-mcp/overview/okf-mcp"), true);
+  assert.equal(index.byUri.has("okf://okf-mcp/policies/authoring-safety"), true);
+  assert.equal(
+    index.edges.some((edge) => (
+      edge.source === "okf://okf-mcp/workflows/concept-update"
+      && edge.target === "okf://okf-mcp/policies/authoring-safety"
+      && edge.relationType === "checked_by"
+    )),
+    true,
+  );
+  assert.equal(searchConcepts(index, { query: "proposal" }).total > 0, true);
+  assert.equal(packageMetadata.files.includes("okf"), true);
+  assert.equal(packageMetadata.files.includes("okf.project.yaml"), true);
+});
+
+test("project validation reports broken and invalid typed relations as errors", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "okf-project-bad-"));
+  const bundle = path.join(root, "okf", "bundle");
+  fs.mkdirSync(bundle, { recursive: true });
+  fs.writeFileSync(path.join(root, "okf.project.yaml"), [
+    "project: BadFixture",
+    "bundles:",
+    "  - id: bad",
+    "    root: okf/bundle",
+    "",
+  ].join("\n"), "utf8");
+  fs.writeFileSync(path.join(bundle, "alpha.md"), [
+    "---",
+    "type: Spec",
+    "title: Alpha",
+    "relations:",
+    "  - type: impossible",
+    "    target: okf://bad/missing.md",
+    "---",
+    "",
+    "# Alpha",
+    "",
+  ].join("\n"), "utf8");
+  const index = buildProjectIndex(path.join(root, "okf.project.yaml"));
+  assert.equal(index.errors.some((error) => error.code === "invalid_relation_type"), true);
+  assert.equal(index.errors.some((error) => error.code === "broken_relation"), true);
+});
+
+test("project validation reports config and plugin boundary errors", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "okf-project-config-bad-"));
+  fs.writeFileSync(path.join(root, "okf.project.yaml"), [
+    "project: BadConfig",
+    "bundles:",
+    "  - id: app",
+    "    root: ../outside",
+    "  - id: app",
+    "    root: okf/app",
+    "plugins:",
+    "  - name: escaped",
+    "    type: filesystem",
+    "    root: docs",
+    "    output: ../generated",
+    "    bundle: missing",
+    "",
+  ].join("\n"), "utf8");
+  const index = buildProjectIndex(path.join(root, "okf.project.yaml"));
+  assert.equal(index.errors.some((error) => error.code === "project_path_outside_root"), true);
+  assert.equal(index.errors.some((error) => error.code === "duplicate_bundle_id"), true);
+  assert.equal(index.errors.some((error) => error.code === "unknown_plugin_bundle"), true);
+});
+
+test("GitHub remote bundle URLs are parsed with safe tree paths", () => {
+  assert.deepEqual(
+    parseGitHubBundleUrl("https://github.com/acme/widgets/tree/main/okf/bundles/docs"),
+    {
+      owner: "acme",
+      repo: "widgets",
+      ref: "main",
+      path: "okf/bundles/docs",
+      url: "https://github.com/acme/widgets/tree/main/okf/bundles/docs",
+    },
+  );
+  assert.throws(() => parseGitHubBundleUrl("https://example.com/acme/widgets/tree/main/okf"), /github.com/);
+  assert.throws(() => parseGitHubBundleUrl("https://github.com/acme/widgets/blob/main/okf"), /tree URL/);
+  assert.throws(() => parseGitHubBundleUrl("https://github.com/acme/widgets/tree/main/../secrets"), /tree URL|safe bundle path/);
+});
+
+test("GitHub remote bundles load Markdown concepts without local checkout", async () => {
+  const fetch = makeGitHubFetchMock([
+    {
+      path: "okf/bundles/docs/index.md",
+      text: "# Remote Docs\n\n- [Alpha](concepts/alpha.md)\n",
+    },
+    {
+      path: "okf/bundles/docs/concepts/alpha.md",
+      text: [
+        "---",
+        "type: Concept",
+        "title: Remote Alpha",
+        "tags: [remote]",
+        "---",
+        "",
+        "# Remote Alpha",
+        "",
+        "[Beta](beta.md)",
+        "",
+      ].join("\n"),
+    },
+    {
+      path: "okf/bundles/docs/concepts/beta.md",
+      text: [
+        "---",
+        "type: Concept",
+        "title: Remote Beta",
+        "---",
+        "",
+        "# Remote Beta",
+        "",
+      ].join("\n"),
+    },
+    {
+      path: "okf/bundles/docs/data.json",
+      text: "{}",
+    },
+  ]);
+  const bundle = await fetchGitHubBundle(
+    { id: "docs", url: "https://github.com/acme/widgets/tree/main/okf/bundles/docs" },
+    { fetch },
+  );
+  assert.equal(bundle.remote, true);
+  assert.equal(bundle.remoteSource.fileCount, 3);
+  assert.deepEqual(bundle.documents.map((doc) => doc.path).sort(), ["concepts/alpha.md", "concepts/beta.md", "index.md"]);
+
+  const index = buildIndex([bundle]);
+  assert.equal(index.errors.length, 0);
+  assert.equal(index.concepts.length, 2);
+  assert.equal(searchConcepts(index, { tagsAny: ["remote"] }).results[0].uri, "okf://docs/concepts/alpha");
+  assert.equal(index.edges.some((edge) => edge.source === "okf://docs/concepts/alpha" && edge.target === "okf://docs/concepts/beta"), true);
+});
+
+test("project configs can include remote bundles", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "okf-project-remote-"));
+  const local = path.join(root, "okf", "local");
+  fs.mkdirSync(local, { recursive: true });
+  fs.writeFileSync(path.join(root, "okf.project.yaml"), [
+    "project: RemoteProject",
+    "bundles:",
+    "  - id: local",
+    "    root: okf/local",
+    "remoteBundles:",
+    "  - id: docs",
+    "    url: https://github.com/acme/widgets/tree/main/okf/bundles/docs",
+    "    include: [remote.md]",
+    "",
+  ].join("\n"), "utf8");
+  fs.writeFileSync(path.join(local, "local.md"), [
+    "---",
+    "type: Concept",
+    "title: Local Concept",
+    "---",
+    "",
+    "# Local Concept",
+    "",
+  ].join("\n"), "utf8");
+
+  const index = await buildProjectIndexAsync(path.join(root, "okf.project.yaml"), {
+    fetch: makeGitHubFetchMock([
+      {
+        path: "okf/bundles/docs/remote.md",
+        text: [
+          "---",
+          "type: Concept",
+          "title: Remote Concept",
+          "---",
+          "",
+          "# Remote Concept",
+          "",
+        ].join("\n"),
+      },
+      {
+        path: "okf/bundles/docs/ignored.md",
+        text: [
+          "---",
+          "type: Concept",
+          "title: Ignored Concept",
+          "---",
+          "",
+          "# Ignored Concept",
+          "",
+        ].join("\n"),
+      },
+    ]),
+  });
+  assert.equal(index.project.name, "RemoteProject");
+  assert.equal(index.errors.length, 0);
+  assert.equal(index.bundles.some((bundle) => bundle.id === "docs" && bundle.remote), true);
+  assert.equal(index.byUri.has("okf://docs/remote.md"), true);
+  assert.equal(index.byUri.has("okf://docs/ignored.md"), false);
+});
+
+test("MCP can load and list remote bundles at runtime", async (t) => {
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = makeGitHubFetchMock([
+    {
+      path: "okf/bundles/docs/remote.md",
+      text: [
+        "---",
+        "type: Concept",
+        "title: Runtime Remote",
+        "---",
+        "",
+        "# Runtime Remote",
+        "",
+      ].join("\n"),
+    },
+  ]);
+  try {
+    const { client } = await connectMcp(t, [], { allowRuntimeRemoteLoad: true });
+    const loaded = await callJson(client, "load_remote_bundle", {
+      id: "runtime",
+      url: "https://github.com/acme/widgets/tree/main/okf/bundles/docs",
+    });
+    assert.equal(loaded.payload.fileCount, 1);
+    const bundles = await callJson(client, "list_bundles", {});
+    assert.equal(bundles.payload.some((bundle) => bundle.remote === true), true);
+    const remotes = await callJson(client, "list_remote_bundles", {});
+    assert.equal(remotes.payload.some((bundle) => bundle.provider === "github"), true);
+    const concept = await callJson(client, "get_concept", { uri: "okf://runtime/remote.md" });
+    assert.match(concept.payload.title, /Runtime Remote/);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("MCP project mode can preload configured remote bundles", async (t) => {
+  const previousFetch = globalThis.fetch;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "okf-mcp-project-remote-"));
+  const local = path.join(root, "okf", "local");
+  fs.mkdirSync(local, { recursive: true });
+  fs.writeFileSync(path.join(root, "okf.project.yaml"), [
+    "project: McpRemote",
+    "bundles:",
+    "  - id: local",
+    "    root: okf/local",
+    "remoteBundles:",
+    "  - id: docs",
+    "    url: https://github.com/acme/widgets/tree/main/okf/bundles/docs",
+    "",
+  ].join("\n"), "utf8");
+  fs.writeFileSync(path.join(local, "local.md"), [
+    "---",
+    "type: Concept",
+    "title: Local",
+    "---",
+    "",
+    "# Local",
+    "",
+  ].join("\n"), "utf8");
+  globalThis.fetch = makeGitHubFetchMock([
+    {
+      path: "okf/bundles/docs/remote.md",
+      text: [
+        "---",
+        "type: Concept",
+        "title: Preloaded Remote",
+        "---",
+        "",
+        "# Preloaded Remote",
+        "",
+      ].join("\n"),
+    },
+  ]);
+  try {
+    const { client } = await connectMcp(t, [], { projectPath: path.join(root, "okf.project.yaml") });
+    const concept = await callJson(client, "get_concept", { uri: "okf://docs/remote.md" });
+    assert.equal(concept.payload.title, "Preloaded Remote");
+    const remoteBundles = await callJson(client, "list_remote_bundles", {});
+    assert.equal(remoteBundles.payload.some((bundle) => bundle.provider === "github"), true);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+function makeAuthoringProject() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "okf-authoring-"));
+  const bundle = path.join(root, "okf", "bundle");
+  const proposals = path.join(root, ".okf-proposals");
+  fs.mkdirSync(bundle, { recursive: true });
+  fs.writeFileSync(path.join(root, "okf.project.yaml"), [
+    "project: Authoring",
+    "bundles:",
+    "  - id: app",
+    "    root: okf/bundle",
+    "    exclude:",
+    "      - private/**",
+    "",
+  ].join("\n"), "utf8");
+  fs.writeFileSync(path.join(bundle, "existing.md"), [
+    "---",
+    "id: okf://app/existing",
+    "type: Concept",
+    "title: Existing",
+    "description: Existing description",
+    "customField: preserve me",
+    "---",
+    "",
+    "# Existing",
+    "",
+  ].join("\n"), "utf8");
+  fs.mkdirSync(path.join(bundle, "private"), { recursive: true });
+  fs.writeFileSync(path.join(bundle, "private", "data.json"), "{}\n", "utf8");
+  const store = FileConceptStore.fromProject(path.join(root, "okf.project.yaml"), { proposalRoot: proposals });
+  const service = new ConceptAuthoringService(store);
+  return { root, bundle, proposals, store, service };
+}
+
+test("authoring validates OKF concepts and suggests safe nested paths", () => {
+  const { service } = makeAuthoringProject();
+  assert.equal(
+    service.suggestConceptPath({ bundle: "app", type: "MCP Tool", title: "Create Order", prefix: "tools" }).path,
+    "tools/mcp-tool/create-order.md",
+  );
+  const valid = service.validateConcept({
+    bundle: "app",
+    path: "tools/create-order.md",
+    frontmatter: {
+      id: "okf://app/tools/create-order",
+      type: "MCP Tool",
+      title: "Create Order",
+      tags: ["tool", "orders"],
+      relations: [{ type: "related_to", target: "okf://app/existing" }],
+    },
+    body: "# Create Order\n",
+  });
+  assert.equal(valid.valid, true);
+  assert.match(valid.markdown, /relations:\n  - type: related_to\n    target: "?okf:\/\/app\/existing"?/);
+  assert.equal(valid.concept.uri, "okf://app/tools/create-order");
+});
+
+test("authoring rejects unsafe paths, duplicate ids, and invalid relations", () => {
+  const { service } = makeAuthoringProject();
+  assert.throws(
+    () => service.validateConcept({ bundle: "app", path: "../outside.md", frontmatter: { type: "Concept", title: "Bad" }, body: "# Bad" }),
+    /inside the bundle|safe relative/,
+  );
+  const duplicate = service.validateConcept({
+    bundle: "app",
+    path: "new.md",
+    frontmatter: { id: "okf://app/existing", type: "Concept", title: "Duplicate" },
+    body: "# Duplicate",
+  });
+  assert.equal(duplicate.valid, false);
+  assert.equal(duplicate.errors.some((error) => error.code === "duplicate_uri"), true);
+  const duplicatePath = service.validateConcept({
+    bundle: "app",
+    path: "existing.md",
+    frontmatter: { type: "Concept", title: "Duplicate Path" },
+    body: "# Duplicate Path",
+  });
+  assert.equal(duplicatePath.valid, false);
+  assert.equal(duplicatePath.errors.some((error) => error.code === "duplicate_uri"), true);
+  const badRelation = service.validateConcept({
+    bundle: "app",
+    path: "bad-relation.md",
+    frontmatter: { type: "Concept", title: "Bad", relations: [{ type: "impossible", target: "okf://app/missing" }] },
+    body: "# Bad",
+  });
+  assert.equal(badRelation.valid, false);
+  assert.equal(badRelation.errors.some((error) => error.code === "invalid_relation_type"), true);
+  assert.equal(badRelation.errors.some((error) => error.code === "broken_relation"), true);
+
+  const missingResource = service.validateConcept({
+    bundle: "app",
+    path: "missing-resource.md",
+    frontmatter: { type: "Concept", title: "Missing", resource: "missing.json" },
+    body: "# Missing",
+  });
+  assert.equal(missingResource.valid, false);
+  assert.equal(missingResource.errors.some((error) => error.code === "broken_semantic_reference"), true);
+
+  const excludedResource = service.validateConcept({
+    bundle: "app",
+    path: "excluded-resource.md",
+    frontmatter: { type: "Concept", title: "Excluded", resource: "private/data.json" },
+    body: "# Excluded",
+  });
+  assert.equal(excludedResource.valid, false);
+  assert.equal(excludedResource.errors.some((error) => (
+    error.code === "broken_semantic_reference" && /excluded/.test(error.message)
+  )), true);
+
+  for (const id of ["", null, false, "okf://", "okf://app", "okf://app/../unsafe"]) {
+    const invalidId = service.validateConcept({
+      bundle: "app",
+      path: `invalid-id-${String(id).replace(/[^a-z0-9]/gi, "-") || "empty"}.md`,
+      frontmatter: { id, type: "Concept", title: "Invalid ID" },
+      body: "# Invalid ID",
+    });
+    assert.equal(invalidId.valid, false);
+    assert.equal(invalidId.errors.some((error) => error.code === "invalid_id"), true);
+  }
+
+  const reservedRelation = service.validateConcept({
+    bundle: "app",
+    path: "reserved-relation.md",
+    frontmatter: {
+      type: "Concept",
+      title: "Reserved relation",
+      relations: [{ type: "related_to", target: "okf://app/index.md" }],
+    },
+    body: "# Reserved relation",
+  });
+  assert.equal(reservedRelation.valid, false);
+  assert.equal(reservedRelation.errors.some((error) => error.code === "broken_relation"), true);
+});
+
+test("authoring proposals are accepted into new subdirectories", async () => {
+  const { bundle, service } = makeAuthoringProject();
+  const proposed = await service.proposeConcept({
+    bundle: "app",
+    path: "tools/create-order.md",
+    frontmatter: { type: "MCP Tool", title: "Create Order" },
+    body: "# Create Order",
+    message: "Add tool concept",
+  });
+  assert.equal(proposed.created, true);
+  assert.equal(fs.existsSync(path.join(bundle, "tools", "create-order.md")), false);
+  const accepted = await service.acceptProposal({ proposalId: proposed.proposal.id });
+  assert.equal(accepted.accepted, true);
+  assert.equal(fs.existsSync(path.join(bundle, "tools", "create-order.md")), true);
+  assert.equal(service.store.getIndex().byUri.has("okf://app/tools/create-order.md"), true);
+});
+
+test("authoring updates existing concepts through stale safe proposals", async () => {
+  const { bundle, service } = makeAuthoringProject();
+  const proposed = await service.proposeUpdate({
+    uri: "okf://app/existing",
+    frontmatter: { title: "Existing Corrected" },
+    removeFrontmatterKeys: ["description"],
+    message: "Correct outdated title",
+  });
+  assert.equal(proposed.created, true);
+  assert.equal(proposed.op, "update");
+  assert.equal(proposed.proposal.op, "update");
+  assert.match(proposed.proposal.baseRevision, /^sha256:/);
+  assert.equal(fs.readFileSync(path.join(bundle, "existing.md"), "utf8").includes("Existing Corrected"), false);
+
+  const accepted = await service.acceptProposal({ proposalId: proposed.proposal.id });
+  assert.equal(accepted.accepted, true);
+  assert.equal(accepted.updated, true);
+  const updated = fs.readFileSync(path.join(bundle, "existing.md"), "utf8");
+  assert.match(updated, /title: Existing Corrected/);
+  assert.match(updated, /customField: preserve me/);
+  assert.doesNotMatch(updated, /description:/);
+  assert.match(updated, /# Existing/);
+
+  const immutableUri = await service.proposeUpdate({
+    uri: "okf://app/existing",
+    frontmatter: { id: "okf://app/renamed" },
+  });
+  assert.equal(immutableUri.created, false);
+  assert.equal(immutableUri.validation.errors.some((error) => error.code === "immutable_uri"), true);
+});
+
+test("authoring rejects an update proposal when the concept changed during review", async () => {
+  const { bundle, service } = makeAuthoringProject();
+  const proposed = await service.proposeUpdate({
+    uri: "okf://app/existing",
+    frontmatter: { title: "Proposed Title" },
+  });
+  fs.writeFileSync(path.join(bundle, "existing.md"), [
+    "---",
+    "id: okf://app/existing",
+    "type: Concept",
+    "title: Concurrent Edit",
+    "---",
+    "",
+    "# Concurrent Edit",
+    "",
+  ].join("\n"), "utf8");
+
+  const accepted = await service.acceptProposal({ proposalId: proposed.proposal.id });
+  assert.equal(accepted.accepted, false);
+  assert.equal(accepted.conflict, true);
+  const current = fs.readFileSync(path.join(bundle, "existing.md"), "utf8");
+  assert.match(current, /Concurrent Edit/);
+  assert.doesNotMatch(current, /Proposed Title/);
+});
+
+test("authoring binds update proposals to the original concept path", async () => {
+  const { bundle, proposals, service } = makeAuthoringProject();
+  const original = fs.readFileSync(path.join(bundle, "existing.md"), "utf8");
+  fs.writeFileSync(path.join(bundle, "decoy.md"), original, "utf8");
+  const proposed = await service.proposeUpdate({
+    uri: "okf://app/existing",
+    frontmatter: { title: "Tampered Target" },
+  });
+  const proposalPath = path.join(proposals, `${proposed.proposal.id}.json`);
+  const stored = JSON.parse(fs.readFileSync(proposalPath, "utf8"));
+  stored.path = "decoy.md";
+  fs.writeFileSync(proposalPath, JSON.stringify(stored, null, 2) + "\n", "utf8");
+
+  await assert.rejects(
+    () => service.acceptProposal({ proposalId: proposed.proposal.id }),
+    /target does not match/,
+  );
+  assert.equal(fs.readFileSync(path.join(bundle, "decoy.md"), "utf8"), original);
+});
+
+test("authoring rejects concept writes through symlinked directories", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("Directory symlinks require elevated privileges on Windows.");
+    return;
+  }
+  const { bundle, service } = makeAuthoringProject();
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "okf-outside-"));
+  fs.symlinkSync(outside, path.join(bundle, "linked"), "dir");
+  const proposed = await service.proposeConcept({
+    bundle: "app",
+    path: "linked/escaped.md",
+    frontmatter: { type: "Concept", title: "Escaped" },
+    body: "# Escaped",
+  });
+  assert.equal(proposed.created, true);
+  await assert.rejects(
+    () => service.acceptProposal({ proposalId: proposed.proposal.id }),
+    /symbolic link/,
+  );
+  assert.equal(fs.existsSync(path.join(outside, "escaped.md")), false);
+});
+
+test("proposal storage rejects symlink roots and serializes competing transitions", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("Directory symlinks require elevated privileges on Windows.");
+    return;
+  }
+  const fixture = makeAuthoringProject();
+  const external = fs.mkdtempSync(path.join(os.tmpdir(), "okf-proposal-outside-"));
+  const linked = path.join(fixture.root, "linked-proposals");
+  fs.symlinkSync(external, linked, "dir");
+  assert.throws(
+    () => FileConceptStore.fromProject(path.join(fixture.root, "okf.project.yaml"), { proposalRoot: linked }),
+    /Proposal root|symbolic link|inside the project root/,
+  );
+
+  const proposed = await fixture.service.proposeConcept({
+    bundle: "app",
+    path: "transition.md",
+    frontmatter: { type: "Concept", title: "Transition" },
+    body: "# Transition",
+  });
+  const outcomes = await Promise.allSettled([
+    fixture.service.acceptProposal({ proposalId: proposed.proposal.id }),
+    fixture.service.rejectProposal({ proposalId: ` ${proposed.proposal.id} `, reason: "competing review" }),
+  ]);
+  assert.equal(outcomes.filter((outcome) => outcome.status === "fulfilled").length, 1);
+  const finalProposal = await fixture.service.getProposal({ proposalId: proposed.proposal.id });
+  assert.equal(
+    fs.existsSync(path.join(fixture.bundle, "transition.md")),
+    finalProposal.status === "accepted",
+  );
+});
+
+test("MCP authoring tools create and accept concept proposals in project mode", async (t) => {
+  const { root, bundle, proposals } = makeAuthoringProject();
+  const { client } = await connectMcp(t, [], {
+    projectPath: path.join(root, "okf.project.yaml"),
+    proposalRoot: proposals,
+    allowAuthoring: true,
+  });
+  const tools = await client.listTools();
+  assert.equal(tools.tools.some((tool) => tool.name === "okf_propose_concept"), true);
+  assert.equal(tools.tools.some((tool) => tool.name === "okf_propose_update"), true);
+  const proposed = await callJson(client, "okf_propose_concept", {
+    bundle: "app",
+    path: "mcp/runtime-tool.md",
+    frontmatter: { type: "MCP Tool", title: "Runtime Tool" },
+    body: "# Runtime Tool",
+  });
+  const proposal = proposed.payload.proposal;
+  const accepted = await callJson(client, "okf_accept_proposal", { proposalId: proposal.id });
+  assert.equal(accepted.payload.accepted, true);
+  assert.equal(fs.existsSync(path.join(bundle, "mcp", "runtime-tool.md")), true);
+  const concept = await callJson(client, "get_concept", { uri: "okf://app/mcp/runtime-tool.md" });
+  assert.match(concept.payload.title, /Runtime Tool/);
+
+  const update = await callJson(client, "okf_propose_update", {
+    uri: "okf://app/existing",
+    frontmatter: { title: "Existing Through MCP" },
+  });
+  const updateProposal = update.payload.proposal;
+  const updateAccepted = await callJson(client, "okf_accept_proposal", { proposalId: updateProposal.id });
+  assert.equal(updateAccepted.payload.updated, true);
+  const updatedConcept = await callJson(client, "get_concept", { uri: "okf://app/existing" });
+  assert.match(updatedConcept.payload.title, /Existing Through MCP/);
+});
+
+async function callHttp(handler, options) {
+  const bodyText = options.body === undefined ? "" : JSON.stringify(options.body);
+  const req = Readable.from(bodyText ? [Buffer.from(bodyText)] : []);
+  req.method = options.method || "GET";
+  req.url = options.url || "/";
+  req.headers = Object.assign({}, options.headers || {});
+  const response = { status: 0, headers: {}, text: "" };
+  const res = {
+    writeHead(status, headers) {
+      response.status = status;
+      response.headers = headers || {};
+    },
+    end(text) {
+      response.text = String(text || "");
+    },
+  };
+  await handler(req, res);
+  response.json = response.text ? JSON.parse(response.text) : null;
+  return response;
+}
+
+test("HTTP authoring API protects proposal mutations with bearer auth", async () => {
+  const { root, bundle, proposals } = makeAuthoringProject();
+  const store = FileConceptStore.fromProject(path.join(root, "okf.project.yaml"), { proposalRoot: proposals });
+  const service = new ConceptAuthoringService(store);
+  const handler = createHttpHandler(service, { writeToken: "test-token" });
+
+  const validate = await callHttp(handler, {
+    method: "POST",
+    url: "/v1/concepts/validate",
+    headers: { "content-type": "application/json" },
+    body: {
+      bundle: "app",
+      path: "http/tool.md",
+      frontmatter: { type: "MCP Tool", title: "HTTP Tool" },
+      body: "# HTTP Tool",
+    },
+  });
+  assert.equal(validate.status, 200);
+  assert.equal(validate.json.valid, true);
+
+  const unauthorized = await callHttp(handler, {
+    method: "POST",
+    url: "/v1/proposals",
+    headers: { "content-type": "application/json" },
+    body: {
+      bundle: "app",
+      path: "http/tool.md",
+      frontmatter: { type: "MCP Tool", title: "HTTP Tool" },
+      body: "# HTTP Tool",
+    },
+  });
+  assert.equal(unauthorized.status, 401);
+
+  const proposed = await callHttp(handler, {
+    method: "POST",
+    url: "/v1/proposals",
+    headers: { "content-type": "application/json", authorization: "Bearer test-token" },
+    body: {
+      bundle: "app",
+      path: "http/tool.md",
+      frontmatter: { type: "MCP Tool", title: "HTTP Tool" },
+      body: "# HTTP Tool",
+    },
+  });
+  assert.equal(proposed.status, 200);
+  const unauthorizedRead = await callHttp(handler, {
+    method: "GET",
+    url: `/v1/proposals/${proposed.json.proposal.id}`,
+  });
+  assert.equal(unauthorizedRead.status, 401);
+  const accepted = await callHttp(handler, {
+    method: "POST",
+    url: `/v1/proposals/${proposed.json.proposal.id}/accept`,
+    headers: { authorization: "Bearer test-token" },
+  });
+  assert.equal(accepted.status, 200);
+  assert.equal(accepted.json.accepted, true);
+  assert.equal(fs.existsSync(path.join(bundle, "http", "tool.md")), true);
+
+  const update = await callHttp(handler, {
+    method: "POST",
+    url: "/v1/proposals/update",
+    headers: { "content-type": "application/json", authorization: "Bearer test-token" },
+    body: {
+      uri: "okf://app/existing",
+      frontmatter: { title: "Existing Through HTTP" },
+    },
+  });
+  assert.equal(update.status, 200);
+  assert.equal(update.json.created, true);
+  const updateAccepted = await callHttp(handler, {
+    method: "POST",
+    url: `/v1/proposals/${update.json.proposal.id}/accept`,
+    headers: { authorization: "Bearer test-token" },
+  });
+  assert.equal(updateAccepted.status, 200);
+  assert.equal(updateAccepted.json.updated, true);
+  assert.match(fs.readFileSync(path.join(bundle, "existing.md"), "utf8"), /Existing Through HTTP/);
+});
+
+test("generator plugins write project concepts into configured outputs", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "okf-generate-"));
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Guide\n", "utf8");
+  fs.writeFileSync(path.join(root, "okf.project.yaml"), [
+    "project: Generated",
+    "bundles:",
+    "  - id: generated",
+    "    root: okf/bundles/generated",
+    "plugins:",
+    "  - name: docs",
+    "    type: filesystem",
+    "    root: docs",
+    "    output: okf/bundles/generated/generated/docs",
+    "    bundle: generated",
+    "",
+  ].join("\n"), "utf8");
+  const project = loadProjectConfig(path.join(root, "okf.project.yaml"));
+  const results = generateProject(project);
+  assert.equal(results[0].files, 1);
+  assert.equal(fs.existsSync(path.join(root, "okf", "bundles", "generated", "generated", "docs", "docs-guide.md")), true);
+});
+
+test("generator plugins reject output paths outside the project", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "okf-generate-bad-"));
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Guide\n", "utf8");
+  const project = {
+    root,
+    plugins: [
+      {
+        name: "bad",
+        type: "filesystem",
+        root: "docs",
+        output: "../outside",
+        bundle: "generated",
+      },
+    ],
+  };
+  assert.throws(() => generateProject(project), /outside the project root/);
+});
+
+async function captureStdout(fn) {
+  const originalWrite = process.stdout.write;
+  let output = "";
+  process.stdout.write = function write(chunk) {
+    output += String(chunk);
+    return true;
+  };
+  try {
+    await fn();
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+  return output;
+}
+
+test("CLI subcommands support project validation and search", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "okf-cli-"));
+  const bundle = path.join(root, "okf", "bundle");
+  fs.mkdirSync(bundle, { recursive: true });
+  fs.writeFileSync(path.join(root, "okf.project.yaml"), [
+    "project: CliFixture",
+    "bundles:",
+    "  - id: cli",
+    "    root: okf/bundle",
+    "",
+  ].join("\n"), "utf8");
+  fs.writeFileSync(path.join(bundle, "alpha.md"), [
+    "---",
+    "type: Spec",
+    "title: Alpha",
+    "description: CLI alpha",
+    "---",
+    "",
+    "# Alpha",
+    "",
+  ].join("\n"), "utf8");
+  const previousExitCode = process.exitCode;
+  process.exitCode = 0;
+  const validate = await captureStdout(() => cliMain(["--project", path.join(root, "okf.project.yaml"), "validate"]));
+  assert.equal(process.exitCode, 0);
+  assert.match(validate, /"valid": true/);
+  const search = await captureStdout(() => cliMain(["--project", path.join(root, "okf.project.yaml"), "search", "Alpha"]));
+  assert.match(search, /Alpha/);
+  process.exitCode = previousExitCode;
+});
+
+test("CLI rejects dangling option flags", () => {
+  assert.throws(() => parseArgs(["--bundle"]), /requires a value/);
+  assert.throws(() => parseArgs(["--project"]), /requires a value/);
+  assert.throws(() => parseArgs(["--host"]), /requires a value/);
+  assert.equal(parseArgs(["--project", "okf.project.yaml", "serve", "--host", "0.0.0.0", "--port", "9000"]).host, "0.0.0.0");
+  assert.equal(parseArgs(["--project", "okf.project.yaml", "serve", "--host", "0.0.0.0", "--port", "9000"]).port, 9000);
+});
+
+test("MCP resources and tools operate over the in-memory index", async (t) => {
+  const root = makeFixture();
+  const { client } = await connectMcp(t, [`fixture=${root}`]);
+  assert.equal(client.getServerVersion().name, "okf-mcp");
+  const resources = await client.listResources();
+  assert.equal(resources.resources.length, 5);
+  const read = await client.readResource({ uri: "okf://fixture/specs/alpha.md" });
+  assert.match(read.contents[0].text, /# Alpha/);
+  const tools = await client.listTools();
+  assert.equal(tools.tools.some((tool) => tool.name === "search_concepts"), true);
+  const search = await callJson(client, "search_concepts", { tagsAny: ["endpoint"] });
+  assert.equal(search.payload.results.some((result) => result.title === "Alpha"), true);
+});
+
+test("graph tools normalize path URI aliases to canonical concept ids", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "okf-graph-alias-"));
+  fs.writeFileSync(path.join(root, "source.md"), [
+    "---",
+    "id: okf://fixture/source",
+    "type: Concept",
+    "title: Source",
+    "relations:",
+    "  - type: related_to",
+    "    target: okf://fixture/target",
+    "---",
+    "",
+    "# Source",
+    "",
+  ].join("\n"), "utf8");
+  fs.writeFileSync(path.join(root, "target.md"), [
+    "---",
+    "id: okf://fixture/target",
+    "type: Concept",
+    "title: Target",
+    "---",
+    "",
+    "# Target",
+    "",
+  ].join("\n"), "utf8");
+  const index = buildIndex([`fixture=${root}`]);
+  const neighbors = getNeighbors(index, "okf://fixture/source.md");
+  assert.equal(neighbors.uri, "okf://fixture/source");
+  assert.equal(neighbors.outbound.length, 1);
+  const subgraph = getSubgraph(index, { uri: "okf://fixture/source.md", depth: 1 });
+  assert.equal(subgraph.nodes.some((node) => node.id === "okf://fixture/target"), true);
+  const paths = findPaths(index, "okf://fixture/source.md", "okf://fixture/target.md", 3);
+  assert.deepEqual(paths.paths, [["okf://fixture/source", "okf://fixture/target"]]);
+});
+
+test("MCP tools describe their purpose, parameters, and side effects", async (t) => {
+  const { root, proposals } = makeAuthoringProject();
+  const { client } = await connectMcp(t, [], {
+    projectPath: path.join(root, "okf.project.yaml"),
+    proposalRoot: proposals,
+    allowAuthoring: true,
+    allowRuntimeRemoteLoad: true,
+  });
+  const listed = await client.listTools();
+  listed.tools.forEach((tool) => {
+    assert.equal(typeof tool.description, "string", `${tool.name} description`);
+    assert.equal(tool.description.length > 24, true, `${tool.name} has a useful description`);
+    assert.doesNotMatch(tool.description, /^OKF .* tool\.$/, `${tool.name} does not use a placeholder description`);
+    assert.equal(typeof tool.annotations.readOnlyHint, "boolean", `${tool.name} readOnlyHint`);
+    assert.equal(typeof tool.annotations.destructiveHint, "boolean", `${tool.name} destructiveHint`);
+    assert.equal(typeof tool.annotations.idempotentHint, "boolean", `${tool.name} idempotentHint`);
+    assert.equal(typeof tool.annotations.openWorldHint, "boolean", `${tool.name} openWorldHint`);
+    Object.entries(tool.inputSchema.properties).forEach(([name, schema]) => {
+      assert.equal(typeof schema.description, "string", `${tool.name}.${name} description`);
+      assert.equal(schema.description.length > 8, true, `${tool.name}.${name} has a useful description`);
+    });
+  });
+  const byName = new Map(listed.tools.map((tool) => [tool.name, tool]));
+  assert.equal(byName.get("search_concepts").annotations.readOnlyHint, true);
+  assert.equal(byName.get("load_remote_bundle").annotations.openWorldHint, true);
+  assert.equal(byName.get("okf_propose_update").annotations.readOnlyHint, false);
+  assert.equal(byName.get("okf_accept_proposal").annotations.destructiveHint, true);
+});
+
+test("MCP validation and required argument errors are surfaced", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "okf-mcp-invalid-"));
+  fs.writeFileSync(path.join(root, "bad.md"), "# Bad\n", "utf8");
+  const { client } = await connectMcp(t, [`fixture=${root}`]);
+  const validation = await callJson(client, "validate_bundle", { bundle: "fixture" });
+  assert.equal(validation.payload.diagnostics.some((entry) => entry.code === "missing_frontmatter"), true);
+  assert.equal(validation.payload.valid, false);
+  const invalidArguments = await client.callTool({ name: "find_paths", arguments: {} });
+  assert.equal(invalidArguments.isError, true);
+  assert.match(invalidArguments.content[0].text, /Invalid arguments/);
+});
+
+test("bundle mode indexes a neutral multi-directory concept graph", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "okf-neutral-"));
+  fs.mkdirSync(path.join(root, "services"), { recursive: true });
+  fs.mkdirSync(path.join(root, "tables"), { recursive: true });
+  fs.writeFileSync(path.join(root, "services", "alpha.md"), [
+    "---",
+    "type: Service",
+    "title: Alpha Service",
+    "description: Example service.",
+    "tags: [service]",
+    "---",
+    "",
+    "# Alpha Service",
+    "",
+    "- [Raw Alpha](../tables/raw_alpha.md)",
+    "",
+  ].join("\n"), "utf8");
+  fs.writeFileSync(path.join(root, "tables", "raw_alpha.md"), [
+    "---",
+    "type: Table",
+    "title: raw_alpha",
+    "description: Example raw table.",
+    "tags: [table]",
+    "---",
+    "",
+    "# raw_alpha",
+    "",
+  ].join("\n"), "utf8");
+  const index = buildIndex([`neutral=${root}`]);
+  assert.equal(index.errors.length, 0);
+  assert.equal(index.warnings.length, 0);
+  assert.equal(index.concepts.filter((doc) => doc.type === "Service").length, 1);
+  assert.equal(index.concepts.some((doc) => doc.path === "tables/raw_alpha.md"), true);
+  assert.equal(
+    index.edges.some((edge) => (
+      edge.source === "okf://neutral/services/alpha" &&
+      edge.target === "okf://neutral/tables/raw_alpha"
+    )),
+    true,
+  );
+});
