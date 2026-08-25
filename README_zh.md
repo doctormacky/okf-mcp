@@ -2,6 +2,8 @@
 
 [English](README.md) | [简体中文](README_zh.md)
 
+完整使用说明：[okf-mcp 中文用户指南](docs/USER_GUIDE_ZH.md)
+
 > 本仓库基于原始项目 [mfdaves/okf-mcp](https://github.com/mfdaves/okf-mcp) 进行企业知识快速发布能力扩展。原项目及其贡献者继续依据 MIT License 获得署名。
 
 `okf-mcp` 是 [Open Knowledge Format v0.2](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) 的本地优先消费者、验证器、图索引、CLI 和 MCP 服务器。
