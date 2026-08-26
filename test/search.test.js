@@ -100,6 +100,54 @@ test("search bounds queries and ignores punctuation-only and arbitrary frontmatt
   );
 });
 
+test("search ignores extension frontmatter and indexes its ordinary body", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "okf-search-semantic-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(root, "orders.md"), [
+    "---",
+    "type: Semantic Dataset",
+    "title: Orders",
+    "semantic:",
+    "  profile: dbexplain-okf-v1",
+    "  kind: dataset",
+    "  physical_table: /tables/prod/app/orders.md",
+    "  fields:",
+    "    - name: order_date",
+    "      column: created_at",
+    "      datatype: DateTimeTz",
+    "      synonyms: [purchase time, transaction timestamp]",
+    "      enum:",
+    "        values:",
+    "          - code: paid",
+    "            labels:",
+    "              en: Paid",
+    "              zh: 已支付",
+    "---",
+    "",
+    "# Orders",
+    "",
+    "Purchase time and transaction timestamp are documented here.",
+  ].join("\n"), "utf8");
+  fs.writeFileSync(path.join(root, "untrusted.md"), [
+    "---",
+    "type: Concept",
+    "title: Untrusted",
+    "semantic:",
+    "  profile: some-other-profile",
+    "  fields:",
+    "    - synonyms: [private semantic token]",
+    "---",
+    "",
+    "# Untrusted",
+    "",
+  ].join("\n"), "utf8");
+  const index = buildIndex([{ id: "semantic", root }]);
+  assert.deepEqual(searchConcepts(index, { query: "purchase time" }).results.map((entry) => entry.path), ["orders.md"]);
+  assert.equal(searchConcepts(index, { query: "transaction timestamp" }).total, 1);
+  assert.equal(searchConcepts(index, { query: "已支付" }).total, 0);
+  assert.equal(searchConcepts(index, { query: "private semantic token" }).total, 0);
+});
+
 test("compact search bounds returned text while full detail remains lossless", (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "okf-search-compact-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

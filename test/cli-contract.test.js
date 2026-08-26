@@ -74,6 +74,21 @@ test("CLI parses contract flags and rejects unknown options as usage errors", ()
   assert.equal(args.receiptFile, "receipt.json");
   assert.equal(args.maxContentBytes, 65536);
   assert.equal(parseArgs(["--max-content-bytes", "1048576"]).maxContentBytes, 1048576);
+  const dbexplain = parseArgs([
+    "dbexplain", "sync",
+    "--dbexplain-env", "/secure/.env.dbexplain.enc",
+    "--include", "prod-main",
+    "--bundle-root", "/tmp/database-bundle",
+    "--generated-at", "2026-08-25T09:00:00Z",
+    "--conn", "4",
+    "--dry-run",
+  ]);
+  assert.equal(dbexplain.dbexplainEnv, "/secure/.env.dbexplain.enc");
+  assert.equal(dbexplain.dbexplainInclude, "prod-main");
+  assert.equal(dbexplain.bundleRoot, "/tmp/database-bundle");
+  assert.equal(dbexplain.generatedAt, "2026-08-25T09:00:00Z");
+  assert.equal(dbexplain.dbexplainConn, 4);
+  assert.equal(dbexplain.dryRun, true);
   const live = parseArgs(["--write", "--actor", "openai/gpt-5.6", "--git-commit"]);
   assert.equal(live.write, true);
   assert.equal(live.actor, "openai/gpt-5.6");
@@ -91,6 +106,11 @@ test("CLI parses contract flags and rejects unknown options as usage errors", ()
   assert.throws(() => parseArgs(["--actor", "openai\/gpt-5.6"]), /requires --write/);
   assert.throws(() => parseArgs(["--write", "--actor", "invalid"]), /human:<id>/);
   assert.throws(() => parseArgs(["--git-commit"]), /requires --write/);
+  assert.throws(
+    () => parseArgs(["dbexplain", "inspect", "--dbexplain-env", "a", "--dbexplain-config", "b"]),
+    /only one/,
+  );
+  assert.throws(() => parseArgs(["dbexplain", "sync", "--conn", "101"]), /1 through 100/);
   assert.equal(exitCodeForError(new Error("operational")), 1);
 });
 
@@ -111,7 +131,62 @@ test("usage documents version and MCP capability flags", () => {
   assert.match(text, /--allow-remote-tool/);
   assert.match(text, /--parameters-file <path\|->/);
   assert.match(text, /--receipt-file <path\|->/);
+  assert.match(text, /dbexplain sync/);
+  assert.match(text, /--dbexplain-env <path>/);
   assert.match(text, /nearest okf\.project\.yaml/);
+});
+
+test("dbexplain CLI dispatches managed sync without project discovery", async () => {
+  let received;
+  const output = await captureStdout(() => main([
+    "dbexplain", "sync",
+    "--bundle-root", "/tmp/database-bundle",
+    "--generated-at", "2026-08-25T09:00:00Z",
+    "--include", "prod-main",
+    "--dry-run",
+  ], {
+    cwd: "/tmp",
+    env: { TEST_ONLY: "1" },
+    syncDbExplain(config) {
+      received = config;
+      return {
+        action: "dry-run",
+        applied: false,
+        planDigest: `sha256:${"a".repeat(64)}`,
+      };
+    },
+  }));
+  assert.equal(received.bundleRoot, "/tmp/database-bundle");
+  assert.equal(received.generatedAt, "2026-08-25T09:00:00Z");
+  assert.equal(received.include, "prod-main");
+  assert.equal(received.cwd, "/tmp");
+  assert.match(output, /"action": "dry-run"/);
+
+  let validatedRoot;
+  const validateOutput = await captureStdout(() => main([
+    "dbexplain", "validate", "--bundle-root", "/tmp/database-bundle",
+  ], {
+    validateDbExplainBundle(config) {
+      validatedRoot = config.bundleRoot;
+      return { valid: true, validForProject: true };
+    },
+  }));
+  assert.equal(validatedRoot, "/tmp/database-bundle");
+  assert.match(validateOutput, /"valid": true/);
+
+  const help = await captureStdout(() => main(["dbexplain", "--help"]));
+  assert.match(help, /config discovery/);
+  assert.match(help, /mysql, postgres, gaussdb, sqlite, oracle/);
+  assert.match(help, /Observation-only drift/);
+
+  await assert.rejects(
+    main(["dbexplain", "sync", "--bundle-root", "/tmp/database-bundle", "--dry-run"]),
+    (error) => error instanceof UsageError && /--generated-at/.test(error.message),
+  );
+  await assert.rejects(
+    main(["--root", "/tmp/catalog", "dbexplain", "inspect"]),
+    (error) => error instanceof UsageError && /cannot be combined/.test(error.message),
+  );
 });
 
 test("validate and search discover the nearest project config", async () => {

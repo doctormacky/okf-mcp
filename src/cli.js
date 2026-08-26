@@ -36,11 +36,19 @@ const {
 const { buildV02MigrationPlan, checkV02Migration } = require("./migration");
 const { describeConceptGitSources, readConceptGitSource } = require("./git-source");
 const { validActor } = require("./v02");
+const {
+  checkDbExplain,
+  draftDbExplainOverlay,
+  inspectDbExplain,
+  refreshDbExplainOverlayIndexes,
+  syncDbExplain,
+  validateDbExplainBundle,
+} = require("./dbexplain");
 const packageMetadata = require("../package.json");
 
 const COMMANDS = new Set([
   "mcp", "validate", "graph", "search", "concept", "neighbors", "paths", "generate", "serve", "hosted",
-  "provenance", "edge-kinds", "computation", "asset", "source", "migrate", "knowledge",
+  "provenance", "edge-kinds", "computation", "asset", "source", "migrate", "knowledge", "dbexplain",
 ]);
 
 const KNOWLEDGE_OPERATIONS = new Set(["download", "submit", "status"]);
@@ -121,6 +129,21 @@ function parseArgs(argv) {
   let httpTransport = false;
   let insecureHttp = false;
   let previewId = "";
+  let dbexplainEnv = "";
+  let dbexplainConfig = "";
+  let dsnEnv = "";
+  let dbexplainBin = "dbexplain";
+  let dbexplainInclude = "";
+  let dbexplainExclude = "";
+  let dbexplainTimeout = "20s";
+  let dbexplainConn = 10;
+  let bundleRoot = "";
+  let generatedAt = "";
+  let expectPlan = "";
+  let overlayDraftAllTables = false;
+  let overlayDraftUseCoreTables = false;
+  let overlayDraftTables = "";
+  let overlayDraftLimit = 0;
   const generatedPaths = [];
   const search = {
     types: [],
@@ -218,6 +241,74 @@ function parseArgs(argv) {
     }
     if (arg === "--inspect") {
       inspect = true;
+      continue;
+    }
+    const dbexplainPathOptions = {
+      "--dbexplain-env": "dbexplainEnv",
+      "--dbexplain-config": "dbexplainConfig",
+      "--dsn-env": "dsnEnv",
+      "--dbexplain-bin": "dbexplainBin",
+      "--bundle-root": "bundleRoot",
+      "--generated-at": "generatedAt",
+      "--expect-plan": "expectPlan",
+      "--include": "dbexplainInclude",
+      "--exclude": "dbexplainExclude",
+      "--timeout": "dbexplainTimeout",
+    };
+    if (Object.prototype.hasOwnProperty.call(dbexplainPathOptions, arg)) {
+      if (!argv[index + 1] || String(argv[index + 1]).startsWith("-")) {
+        throw usageError(`${arg} requires a value.`);
+      }
+      const target = dbexplainPathOptions[arg];
+      const value = argv[index + 1];
+      if (target === "dbexplainEnv") dbexplainEnv = value;
+      else if (target === "dbexplainConfig") dbexplainConfig = value;
+      else if (target === "dsnEnv") dsnEnv = value;
+      else if (target === "dbexplainBin") dbexplainBin = value;
+      else if (target === "bundleRoot") bundleRoot = value;
+      else if (target === "generatedAt") generatedAt = value;
+      else if (target === "expectPlan") expectPlan = value;
+      else if (target === "dbexplainInclude") dbexplainInclude = value;
+      else if (target === "dbexplainExclude") dbexplainExclude = value;
+      else if (target === "dbexplainTimeout") dbexplainTimeout = value;
+      index += 1;
+      continue;
+    }
+    const dbexplainEqualsOptions = [
+      "--dbexplain-env=", "--dbexplain-config=", "--dsn-env=", "--dbexplain-bin=",
+      "--bundle-root=", "--generated-at=", "--expect-plan=", "--include=", "--exclude=", "--timeout=",
+    ];
+    const dbexplainEquals = dbexplainEqualsOptions.find((prefix) => arg.startsWith(prefix));
+    if (dbexplainEquals) {
+      const value = arg.slice(dbexplainEquals.length);
+      if (!value) throw usageError(`${dbexplainEquals.slice(0, -1)} requires a value.`);
+      if (dbexplainEquals === "--dbexplain-env=") dbexplainEnv = value;
+      else if (dbexplainEquals === "--dbexplain-config=") dbexplainConfig = value;
+      else if (dbexplainEquals === "--dsn-env=") dsnEnv = value;
+      else if (dbexplainEquals === "--dbexplain-bin=") dbexplainBin = value;
+      else if (dbexplainEquals === "--bundle-root=") bundleRoot = value;
+      else if (dbexplainEquals === "--generated-at=") generatedAt = value;
+      else if (dbexplainEquals === "--expect-plan=") expectPlan = value;
+      else if (dbexplainEquals === "--include=") dbexplainInclude = value;
+      else if (dbexplainEquals === "--exclude=") dbexplainExclude = value;
+      else if (dbexplainEquals === "--timeout=") dbexplainTimeout = value;
+      continue;
+    }
+    if (arg === "--conn") {
+      const value = Number(argv[index + 1]);
+      if (!Number.isSafeInteger(value) || value < 1 || value > 100) {
+        throw usageError("--conn requires an integer from 1 through 100.");
+      }
+      dbexplainConn = value;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--conn=")) {
+      const value = Number(arg.slice("--conn=".length));
+      if (!Number.isSafeInteger(value) || value < 1 || value > 100) {
+        throw usageError("--conn requires an integer from 1 through 100.");
+      }
+      dbexplainConn = value;
       continue;
     }
     if (arg === "--authoring") {
@@ -454,6 +545,46 @@ function parseArgs(argv) {
       dryRun = true;
       continue;
     }
+    if (arg === "--all-tables") {
+      overlayDraftAllTables = true;
+      continue;
+    }
+    if (arg === "--use-core-tables") {
+      overlayDraftUseCoreTables = true;
+      continue;
+    }
+    if (arg === "--tables") {
+      const value = argv[index + 1];
+      if (!value || String(value).startsWith("-")) {
+        throw usageError("--tables requires a comma-separated table list.");
+      }
+      overlayDraftTables = value;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--tables=")) {
+      const value = arg.slice("--tables=".length);
+      if (!value) throw usageError("--tables requires a comma-separated table list.");
+      overlayDraftTables = value;
+      continue;
+    }
+    if (arg === "--limit") {
+      const value = Number(argv[index + 1]);
+      if (!Number.isFinite(value) || value < 1 || value > 500) {
+        throw usageError("--limit must be an integer from 1 through 500.");
+      }
+      overlayDraftLimit = Math.floor(value);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--limit=")) {
+      const value = Number(arg.slice("--limit=".length));
+      if (!Number.isFinite(value) || value < 1 || value > 500) {
+        throw usageError("--limit must be an integer from 1 through 500.");
+      }
+      overlayDraftLimit = Math.floor(value);
+      continue;
+    }
     if (arg === "--json") {
       jsonOutput = true;
       continue;
@@ -509,6 +640,9 @@ function parseArgs(argv) {
   if (gitCommit && !write) {
     throw usageError("--git-commit requires --write.");
   }
+  if ([dbexplainEnv, dbexplainConfig, dsnEnv].filter(Boolean).length > 1) {
+    throw usageError("Use only one of --dbexplain-env, --dbexplain-config, or --dsn-env.");
+  }
   return {
     bundles,
     remoteBundles,
@@ -540,6 +674,21 @@ function parseArgs(argv) {
     http: httpTransport,
     insecureHttp,
     previewId,
+    dbexplainEnv,
+    dbexplainConfig,
+    dsnEnv,
+    dbexplainBin,
+    dbexplainInclude,
+    dbexplainExclude,
+    dbexplainTimeout,
+    dbexplainConn,
+    bundleRoot,
+    generatedAt,
+    expectPlan,
+    overlayDraftAllTables,
+    overlayDraftUseCoreTables,
+    overlayDraftTables,
+    overlayDraftLimit,
     generatedPaths,
     host,
     port,
@@ -588,6 +737,12 @@ function usage() {
     "  knowledge download <dir>    Download a bundle snapshot into a workspace directory.",
     "  knowledge submit <dir>      Validate and publish a workspace (--dry-run to preview only).",
     "  knowledge status            Show the published bundle revision and last publication.",
+    "  dbexplain inspect           Inspect configured SQL database sources without connecting.",
+    "  dbexplain check             Check selected database connections.",
+    "  dbexplain sync              Generate or update a managed OKF database Bundle.",
+    "  dbexplain validate          Validate OKF plus dbexplain binding/projection contracts.",
+    "  dbexplain overlay-draft     Draft missing semantic datasets and declared relationships.",
+    "  dbexplain overlay-index     Rebuild overlay index.md catalogs from existing Concepts.",
     "",
     "Options:",
     "  --root, -r <directory>      Load one official OKF bundle root.",
@@ -609,6 +764,10 @@ function usage() {
     "             --dry-run (validate without publishing), --yes (skip confirmation),",
     "             --preview-id <id>, --json (machine-readable output). The token is read from",
     "             OKF_ROLLOUT_TOKEN or OKF_WRITE_TOKEN environment variable, never argv.",
+    "  dbexplain: --dbexplain-env <path> | --dbexplain-config <path> | --dsn-env <name>",
+    "             --include <label-or-kind> --exclude <label-or-kind> --timeout <duration> --conn <n>",
+    "             sync requires --bundle-root <dir> --generated-at <UTC> and either --dry-run",
+    "             or --expect-plan <sha256:digest>. Configured SQL DSNs require stable unique labels.",
     "  Hosted mode requires OKF_READ_TOKEN and OKF_ROLLOUT_TOKEN; MCP is mounted at /mcp.",
     "  Search filters: --status, --trust-tier, --freshness, --as-of, --has-sources,",
     "                  --runtime, --attestation-ready, --frontmatter key=value.",
@@ -626,6 +785,7 @@ function usage() {
     "  node bin/okf-mcp.js --bundle app=./okf/bundles/app",
     "  node bin/okf-mcp.js --remote-bundle docs=https://github.com/org/repo/tree/main/okf/bundles/docs --inspect",
     "  node bin/okf-mcp.js --project okf.project.yaml validate",
+    "  okf dbexplain sync --bundle-root ./okf/bundles/database --generated-at 2026-08-25T09:00:00Z --dry-run",
     "",
   ].join("\n");
 }
@@ -760,6 +920,148 @@ function knowledgeStdout(runtime) {
   return (runtime && runtime.stdout) || process.stdout;
 }
 
+function dbexplainUsage() {
+  return [
+    "okf dbexplain",
+    "",
+    "Usage:",
+    "  okf dbexplain inspect [source and selection options]",
+    "  okf dbexplain check [source and selection options]",
+    "  okf dbexplain validate --bundle-root <dir>",
+    "  okf dbexplain sync --bundle-root <dir> --generated-at <UTC> --dry-run",
+    "  okf dbexplain sync --bundle-root <dir> --generated-at <UTC> --expect-plan <sha256:digest>",
+    "",
+    "Overlay (never overwrites existing overlay Concepts):",
+    "  okf dbexplain overlay-draft --bundle-root <dir> --tables <name,name,...>",
+    "  okf dbexplain overlay-draft --bundle-root <dir> --use-core-tables",
+    "  okf dbexplain overlay-draft --bundle-root <dir> --all-tables",
+    "  okf dbexplain overlay-index --bundle-root <dir>",
+    "  overlay-index rebuilds business/, queries/, and other overlay index.md catalogs",
+    "  after new or updated Concepts. overlay-draft also refreshes those indexes.",
+    "",
+    "Source options (omit all to use dbexplain config discovery):",
+    "  --dbexplain-env <path>      Select .env.dbexplain or encrypted env config.",
+    "  --dbexplain-config <path>   Select a dbexplain JSON DSN array.",
+    "  --dsn-env <name>            Read one direct DSN from an environment variable.",
+    "  --dbexplain-bin <path>      Override the dbexplain executable (default: dbexplain).",
+    "",
+    "Selection and collection:",
+    "  Query-ready kinds: mysql, postgres, gaussdb, sqlite, oracle.",
+    "  --include <label-or-kind>   Include comma-separated stable labels or SQL kinds.",
+    "  --exclude <label-or-kind>   Exclude comma-separated stable labels or SQL kinds.",
+    "  --timeout <duration>        Per-database collection timeout (default: 20s).",
+    "  --conn <n>                  Collection concurrency from 1 through 100 (default: 10).",
+    "",
+    "sync always recollects the selected databases. Observation-only drift may refresh during",
+    "apply; structure, relationship, configuration, generated time, or target changes invalidate",
+    "the dry-run plan and require another review.",
+    "",
+  ].join("\n");
+}
+
+function dbexplainCommandConfig(args, runtime) {
+  return {
+    dbexplainEnv: args.dbexplainEnv,
+    dbexplainConfig: args.dbexplainConfig,
+    dsnEnv: args.dsnEnv,
+    dbexplainBin: args.dbexplainBin,
+    include: args.dbexplainInclude,
+    exclude: args.dbexplainExclude,
+    timeout: args.dbexplainTimeout,
+    conn: args.dbexplainConn,
+    bundleRoot: args.bundleRoot,
+    generatedAt: args.generatedAt,
+    expectPlan: args.expectPlan,
+    dryRun: args.dryRun,
+    packageVersion: packageMetadata.version,
+    cwd: (runtime && runtime.cwd) || process.cwd(),
+    env: (runtime && runtime.env) || process.env,
+    ...(runtime && runtime.spawnSync ? { spawnSync: runtime.spawnSync } : {}),
+  };
+}
+
+function runDbExplainCommand(args, runtime) {
+  const operation = args.positional[1];
+  if (!["inspect", "check", "sync", "validate", "overlay-draft", "overlay-index"].includes(operation)) {
+    throw usageError("dbexplain requires inspect, check, sync, validate, overlay-draft, or overlay-index.");
+  }
+  if (args.root || args.project || args.bundles.length || args.remoteBundles.length) {
+    throw usageError("dbexplain manages a dedicated --bundle-root and cannot be combined with --root, --project, or --bundle.");
+  }
+  if (operation === "validate" || operation === "overlay-draft" || operation === "overlay-index") {
+    if (!args.bundleRoot) throw usageError(`dbexplain ${operation} requires --bundle-root <directory>.`);
+    if (args.generatedAt || args.expectPlan) {
+      throw usageError(`dbexplain ${operation} does not accept sync plan options.`);
+    }
+    if (args.dbexplainInclude || args.dbexplainExclude) {
+      throw usageError(`dbexplain ${operation} does not accept source selection options.`);
+    }
+    if (operation === "validate") {
+      if (args.dryRun) throw usageError("dbexplain validate does not accept --dry-run.");
+      if (args.overlayDraftAllTables || args.overlayDraftUseCoreTables || args.overlayDraftTables || args.overlayDraftLimit) {
+        throw usageError("dbexplain validate does not accept overlay-draft scope flags.");
+      }
+      const result = ((runtime && runtime.validateDbExplainBundle) || validateDbExplainBundle)({
+        bundleRoot: args.bundleRoot,
+      });
+      knowledgeStdout(runtime).write(JSON.stringify(result, null, 2) + "\n");
+      if (!result.valid) process.exitCode = 1;
+      return;
+    }
+    if (operation === "overlay-index") {
+      if (args.overlayDraftAllTables || args.overlayDraftUseCoreTables || args.overlayDraftTables || args.overlayDraftLimit) {
+        throw usageError("dbexplain overlay-index does not accept overlay-draft scope flags.");
+      }
+      const result = ((runtime && runtime.refreshDbExplainOverlayIndexes) || refreshDbExplainOverlayIndexes)({
+        bundleRoot: args.bundleRoot,
+        dryRun: args.dryRun,
+      });
+      knowledgeStdout(runtime).write(JSON.stringify(result, null, 2) + "\n");
+      if (!args.dryRun && !result.applied) process.exitCode = 1;
+      return;
+    }
+    const result = ((runtime && runtime.draftDbExplainOverlay) || draftDbExplainOverlay)({
+      bundleRoot: args.bundleRoot,
+      dryRun: args.dryRun,
+      allTables: args.overlayDraftAllTables,
+      useCoreTables: args.overlayDraftUseCoreTables,
+      tables: args.overlayDraftTables,
+      limit: args.overlayDraftLimit,
+    });
+    knowledgeStdout(runtime).write(JSON.stringify(result, null, 2) + "\n");
+    if (!args.dryRun && !result.applied) process.exitCode = 1;
+    return;
+  }
+  if (operation !== "sync" && (args.bundleRoot || args.generatedAt || args.expectPlan || args.dryRun)) {
+    throw usageError(`dbexplain ${operation} does not accept sync or overlay write options.`);
+  }
+  if (operation !== "overlay-draft" && (
+    args.overlayDraftAllTables
+    || args.overlayDraftUseCoreTables
+    || args.overlayDraftTables
+    || args.overlayDraftLimit
+  )) {
+    throw usageError(`dbexplain ${operation} does not accept overlay draft options.`);
+  }
+  if (operation === "sync") {
+    if (!args.bundleRoot) throw usageError("dbexplain sync requires --bundle-root <directory>.");
+    if (!args.generatedAt) throw usageError("dbexplain sync requires --generated-at <UTC datetime>.");
+    if (args.dryRun === Boolean(args.expectPlan)) {
+      throw usageError("dbexplain sync requires exactly one of --dry-run or --expect-plan <sha256:digest>.");
+    }
+  }
+  const config = dbexplainCommandConfig(args, runtime);
+  const result = operation === "inspect"
+    ? ((runtime && runtime.inspectDbExplain) || inspectDbExplain)(config)
+    : operation === "check"
+      ? ((runtime && runtime.checkDbExplain) || checkDbExplain)(config)
+      : ((runtime && runtime.syncDbExplain) || syncDbExplain)(config);
+  knowledgeStdout(runtime).write(JSON.stringify(result, null, 2) + "\n");
+  if ((operation === "check" && !result.valid) || (operation === "sync" && (!args.dryRun && !result.applied))) {
+    process.exitCode = 1;
+  }
+}
+
 async function runKnowledgeCommand(args, runtime) {
   const operation = args.positional[1];
   if (!KNOWLEDGE_OPERATIONS.has(operation)) {
@@ -874,6 +1176,10 @@ function requireValidConcept(index, locator) {
 
 async function main(argv, runtime) {
   const args = parseArgs(argv || []);
+  if (args.positional[0] === "dbexplain" && args.help) {
+    knowledgeStdout(runtime).write(dbexplainUsage());
+    return;
+  }
   if (args.help) {
     process.stdout.write(usage());
     return;
@@ -887,6 +1193,9 @@ async function main(argv, runtime) {
   }
   if (args.positional[0] === "knowledge") {
     return runKnowledgeCommand(args, runtime);
+  }
+  if (args.positional[0] === "dbexplain") {
+    return runDbExplainCommand(args, runtime);
   }
   discoverProject(args, (runtime && runtime.cwd) || process.cwd());
   if (args.inspect) {
@@ -1198,6 +1507,8 @@ module.exports = {
   exitCodeForError,
   main,
   parseArgs,
+  dbexplainUsage,
+  runDbExplainCommand,
   stdioServerOptions,
   usage,
 };

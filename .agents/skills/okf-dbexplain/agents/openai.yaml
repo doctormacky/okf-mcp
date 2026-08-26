@@ -1,0 +1,9 @@
+interface:
+  display_name: "Sync OKF Database Facts"
+  short_description: "Sync facts-only OKF v0.2 database Bundles from dbexplain"
+  default_prompt: >-
+    Use $okf-dbexplain to inspect, check, and sync my database into an OKF Bundle
+    (physical facts only), requiring dbexplain v0.1.11 or newer. Finish with okf
+    dbexplain validate, then tell me to use $okf-bundle-business for overlays.
+policy:
+  allow_implicit_invocation: true

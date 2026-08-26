@@ -301,10 +301,11 @@ test("published okf-mcp reference bundle is complete, valid, and packaged", () =
 
   assert.equal(index.errors.length, 0);
   assert.equal(index.warnings.length, 0);
-  assert.equal(index.concepts.length, 14);
+  assert.equal(index.concepts.length, 15);
   assert.equal(index.reserved.length, 1);
   assert.equal(index.byUri.has("okf://okf-mcp/overview/okf-mcp"), true);
   assert.equal(index.byUri.has("okf://okf-mcp/policies/authoring-safety"), true);
+  assert.equal(index.byUri.has("okf://okf-mcp/workflows/dbexplain-bundle-sync"), true);
   assert.equal(
     index.edges.some((edge) => (
       edge.source === "okf://okf-mcp/workflows/concept-update"

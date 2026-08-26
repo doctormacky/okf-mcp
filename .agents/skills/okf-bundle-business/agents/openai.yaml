@@ -1,0 +1,12 @@
+interface:
+  display_name: "Author OKF Bundle Business Overlays"
+  short_description: "Add or update Bundle business overlays for NL2SQL after user approval"
+  default_prompt: >-
+    Use $okf-bundle-business. First inventory existing business/ and queries/.
+    If the same business already exists, propose an in-place update; otherwise
+    propose new files. Show logic and example SQL, wait for my explicit approval,
+    then write semantic + relations + Markdown projections, run overlay-index,
+    and finish with okf dbexplain validate. Agent-generated Saved Queries require
+    successful dbexplain execute verification. Never guess or hand-edit index.md.
+policy:
+  allow_implicit_invocation: true

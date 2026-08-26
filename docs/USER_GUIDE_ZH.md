@@ -1,190 +1,97 @@
-# okf-mcp 0.9.0 中文用户指南
+# okf-mcp v0.9.0 中文使用手册
 
-> **版本与发布状态**
->
-> 本文档描述的是当前源码中声明的版本 `0.9.0`，即 `package.json`、`package-lock.json` 和 `server.json` 中的版本号。
-> 截至本文档编写时，仓库尚未创建正式的 `v0.9.0` Git Tag 或 GitHub Release，也未发布 `@doctormacky/okf-mcp@0.9.0` npm 包。
->
-> 因此，本文中的“0.9.0”表示**源码声明版本**，不表示该版本已经正式发布。部署时应固定到经过验证的具体 Git Commit；待 `v0.9.0` Tag 或 GitHub Release 正式创建后，再改为固定对应 Tag 或 Release 归档。
+> 当前源码版本为 `0.9.0`，但目前还没有 `v0.9.0` Git Tag、GitHub Release 或正式 npm 包。
+> 生产部署请固定到经过验证的完整 Git Commit SHA。
 
-## 1. 产品定位
+## 1. 产品角色
 
-`okf-mcp` 是 Open Knowledge Format（OKF）v0.2 的验证器、图索引、命令行工具和 MCP 服务器。
+`okf-mcp` 可以承担三个角色：
 
-当前源码声明的包身份为：
+| 角色 | 作用 |
+| --- | --- |
+| MCP 服务器 | 向 Agent 提供知识搜索、读取、图查询和溯源 |
+| OKF Publisher | 通过 Skill 和 CLI 安全更新知识库 |
+| Agent 知识源 | 让业务 Agent 通过 MCP Streamable HTTP 使用知识 |
 
-```text
-@doctormacky/okf-mcp
-```
-
-MCP Registry 身份为：
+推荐架构：
 
 ```text
-io.github.doctormacky/okf-mcp
+发布者
+  -> okf knowledge CLI
+  -> Rollout API
+  -> 不可变 Generation
+  -> MCP 索引
+  -> Agent 通过 /mcp 查询
 ```
 
-当前 fork 主要以源码和源码运行包方式分发。不要假定以下制品已经存在：
-
-- `v0.9.0` Git Tag
-- GitHub `v0.9.0` Release
-- `@doctormacky/okf-mcp@0.9.0` npm 包
-- 可直接安装的 MCP Registry 条目
-
-产品可以承担三个主要角色：
-
-1. **MCP 服务器**：通过 stdio 或 Streamable HTTP 向 Agent 提供 OKF 查询能力。
-2. **知识发布器**：通过内置 Skill 和 `okf knowledge` CLI 完成受控发布。
-3. **Agent 知识源**：让用户的 Agent 通过远程 MCP 搜索、读取和遍历中央知识。
-
-## 2. 快速架构
-
-```mermaid
-flowchart LR
-    subgraph Author["发布侧"]
-        U["用户"]
-        A["本地 Agent<br/>okf-knowledge-publisher Skill"]
-        C["okf knowledge CLI"]
-        W["本地 OKF 工作区"]
-        U --> A
-        A --> C
-        C <--> W
-    end
-
-    subgraph Server["中央 okf-mcp hosted 单进程"]
-        API["Rollout REST API<br/>/v1/rollout/*"]
-        GM["Generation Manager<br/>不可变版本 + 幂等日志"]
-        IDX["活动内存索引<br/>MiniSearch + Graph"]
-        MCP["MCP Streamable HTTP<br/>/mcp"]
-        API --> GM
-        GM --> IDX
-        IDX --> MCP
-    end
-
-    subgraph Readers["消费侧"]
-        R1["Agent A"]
-        R2["Agent B"]
-        R3["Agent C"]
-    end
-
-    C -->|"HTTPS + OKF_ROLLOUT_TOKEN"| API
-    R1 -->|"MCP + OKF_READ_TOKEN"| MCP
-    R2 -->|"MCP + OKF_READ_TOKEN"| MCP
-    R3 -->|"MCP + OKF_READ_TOKEN"| MCP
-```
-
-推荐生产拓扑：
+读写 Token 分开：
 
 ```text
-Agent
-  -> HTTPS / 企业反向代理
-  -> 127.0.0.1:8790
-  -> okf hosted
-```
-
-发布和消费使用不同凭据：
-
-```text
-OKF_READ_TOKEN     -> 仅 MCP 读取
-OKF_ROLLOUT_TOKEN  -> 快照下载、dry-run、submit；不能调用 MCP
+OKF_READ_TOKEN      Agent 查询知识
+OKF_ROLLOUT_TOKEN   发布者下载和提交知识
 ```
 
 两个 Token 必须非空且不同。
 
-# 第一部分：基础准备
+## 2. v0.9.0 主要能力
 
-## 3. 前置条件
+- 认证 `hosted` 模式。
+- MCP Streamable HTTP。
+- stdio 和 HTTP 使用同一套 MCP Tools 与 Resources。
+- 不可变 Generation 和原子发布。
+- `okf knowledge` 发布 CLI。
+- 内置 `okf-knowledge-publisher` Skill。
+- 服务端 dry-run 和有界 Diff。
+- Preview 绑定、Revision 冲突检查和幂等重试。
+- 发布失败恢复和损坏 Generation 回退。
 
-### 3.1 运行环境
+---
 
-必须具备：
+## 3. 安装
+
+### 3.1 环境要求
 
 - Node.js 22 或更高版本
 - Git
-- 可写的 OKF Bundle 根目录
-- 对 Bundle 父目录或项目根目录的写权限，用于 Generation Store
-- 生产环境中的 TLS 终止或可信内部反向代理
+- 一个 OKF Bundle 目录
 
-检查版本：
-
-```bash
-node --version
-git --version
-```
-
-### 3.2 不需要数据库
-
-当前实现不依赖：
-
-- 数据库
-- 向量数据库
-- Embedding 服务
-- 外部托管知识平台
-- 构建步骤
-- GitLab 或 GitHub 发布流程
-
-搜索使用进程内 MiniSearch BM25+，图结构同样保存在内存索引中。
-
-## 4. 从源码安装
-
-### 4.1 固定源码提交
-
-由于目前尚无正式的 `v0.9.0` Tag 或 GitHub Release，生产部署应固定到团队已验证的具体 Commit：
+### 3.2 从源码安装
 
 ```bash
 git clone https://github.com/doctormacky/okf-mcp.git
 cd okf-mcp
 
-git checkout <经过验证的完整-commit-sha>
-```
+# 生产环境请替换为经过验证的完整 Commit SHA
+git checkout <commit-sha>
 
-不要在生产环境直接跟随移动的 `main` 分支。
-
-确认源码声明版本：
-
-```bash
-node -p "require('./package.json').version"
-```
-
-预期：
-
-```text
-0.9.0
-```
-
-这只验证源码元数据，不代表当前 Commit 已经属于正式 Release。
-
-### 4.2 开发或完整验证安装
-
-```bash
 npm ci
 npm test
 npm run self:validate
 npm run package:smoke
+npm run pack:check
+```
 
+查看版本：
+
+```bash
 node bin/okf-mcp.js --version
 ```
 
-预期：
+预期输出：
 
 ```text
 0.9.0
 ```
 
-### 4.3 仅运行时安装
+### 3.3 配置 `okf` 命令
 
-在已完成测试的源码目录中：
-
-```bash
-npm prune --omit=dev
-```
-
-之后可直接运行：
+可以直接执行源码：
 
 ```bash
-node /opt/okf-mcp/bin/okf-mcp.js --version
+node /opt/okf-mcp/bin/okf-mcp.js --help
 ```
 
-也可建立稳定命令：
+也可以创建 `/usr/local/bin/okf`：
 
 ```bash
 #!/usr/bin/env bash
@@ -192,48 +99,18 @@ set -euo pipefail
 exec node /opt/okf-mcp/bin/okf-mcp.js "$@"
 ```
 
-将该脚本安装为：
-
-```text
-/usr/local/bin/okf
-```
-
-然后验证：
+验证：
 
 ```bash
 okf --version
 okf knowledge --help
 ```
 
-### 4.4 构建源码运行包
+没有内部 npm Registry 时，可以在构建机完成验证，再分发包含 `node_modules` 的源码运行目录。详细步骤见 [源码部署说明](source-runtime-deployment.md)。
 
-完成测试后：
+---
 
-```bash
-npm prune --omit=dev
-
-tar \
-  --exclude=.git \
-  --exclude=node_modules/.cache \
-  -czf okf-mcp-runtime-0.9.0-<short-commit>.tar.gz \
-  bin src node_modules package.json package-lock.json okf .agents docs \
-  okf.project.yaml server.json README.md README_zh.md LICENSE
-```
-
-建议在制品清单中同时记录：
-
-```text
-source_version=0.9.0
-git_commit=<完整 Commit SHA>
-build_time=<UTC 时间>
-formal_release=false
-```
-
-不要只使用 `0.9.0` 作为当前源码运行包的唯一标识，因为在正式 Tag 发布前，不同 Commit 都可能声明相同源码版本。
-
-## 5. OKF 目录布局
-
-### 5.1 单 Bundle Root
+## 4. 准备 OKF Bundle
 
 最简单的目录：
 
@@ -241,42 +118,40 @@ formal_release=false
 /data/catalog/
 ├── index.md
 ├── services/
-│   ├── order-api.md
-│   └── payment-api.md
-├── workflows/
-│   └── cancel-order.md
-└── policies/
-    └── refund-policy.md
+│   └── order-api.md
+└── workflows/
+    └── cancel-order.md
 ```
 
-普通概念文件示例：
+概念文件示例：
 
 ```markdown
 ---
 type: Workflow
 title: Cancel Order
-description: Cancels an eligible order before fulfillment.
+description: 订单取消流程。
 tags: [orders, cancellation]
 ---
 
 # Cancel Order
 
-Only unfulfilled orders may be cancelled.
-
-See [Refund Policy](../policies/refund-policy.md).
+只有未履约订单可以取消。
 ```
 
-每个非保留 Markdown 概念必须：
+基本规则：
 
-- 有可解析的 YAML frontmatter
-- 有非空 `type`
-- 使用安全的 Bundle 内相对路径
-- 不使用隐藏路径，例如 `.private/doc.md`
-- 不使用路径穿越，例如 `../outside.md`
+- 普通概念文件必须有 YAML frontmatter。
+- `type` 不能为空。
+- 路径必须位于 Bundle 内。
+- 不要使用隐藏路径、`../` 或符号链接。
 
-### 5.2 Project 模式
+验证：
 
-需要联邦多个本地 Bundle 时使用 `okf.project.yaml`：
+```bash
+okf --root /data/catalog validate
+```
+
+多个 Bundle 可以使用 `okf.project.yaml`：
 
 ```yaml
 project: EnterpriseKnowledge
@@ -285,112 +160,32 @@ strictLinks: false
 bundles:
   - id: app
     root: bundles/app
-    include: ["**/*.md"]
-    exclude: ["archive/**"]
-
   - id: data
     root: bundles/data
-
-relationTypes:
-  - depends_on
-  - produces
-  - consumes
-  - persists_to
-  - configured_by
-  - checked_by
-  - related_to
 ```
-
-验证：
 
 ```bash
 okf --project /data/knowledge/okf.project.yaml validate
 ```
 
-### 5.3 Root 与 Project 选择
+---
 
-单 Root：
+# 角色一：部署 MCP 服务器
 
-```bash
-okf --root /data/catalog validate
-```
+## 5. 启动 Hosted 服务
 
-Project：
+生产环境推荐使用 `hosted`。它在同一进程中提供：
 
-```bash
-okf --project /data/knowledge/okf.project.yaml validate
-```
+- MCP Streamable HTTP
+- 知识发布 API
+- 不可变 Generation
+- 当前活动索引
 
-`--root` 不能和 `--project`、`--bundle` 同时使用。
-
-# 第二部分：MCP 服务器角色
-
-## 6. 三种 MCP 运行方式
-
-### 6.1 stdio MCP
-
-适合：
-
-- 本地 Agent
-- 桌面 MCP 客户端
-- 单用户开发环境
-- 客户端可以启动本地子进程的场景
-
-启动：
+单 Bundle：
 
 ```bash
-okf --root /absolute/path/to/catalog mcp
-```
-
-Project 模式：
-
-```bash
-okf --project /absolute/path/to/okf.project.yaml mcp
-```
-
-stdio 模式不提供网络监听，也不需要 HTTP Token。
-
-### 6.2 低层 `mcp --http`
-
-适合本机开发或受控兼容性测试：
-
-```bash
-okf --root /data/catalog mcp --http \
-  --host 127.0.0.1 \
-  --port 8766
-```
-
-端点：
-
-```text
-http://127.0.0.1:8766/mcp
-```
-
-该模式本身不提供 Hosted Token 认证。
-
-非 Loopback 地址默认被拒绝。只有显式加入以下高风险选项才允许：
-
-```bash
---insecure-http
-```
-
-生产环境不推荐使用该模式公开服务。
-
-### 6.3 推荐：`hosted`
-
-`hosted` 在一个 Node.js 进程中同时运行：
-
-- 认证 MCP Streamable HTTP
-- Rollout REST API
-- Generation Manager
-- 当前活动内存索引
-- 单写入协调器
-
-启动：
-
-```bash
-export OKF_READ_TOKEN='agent-read-token'
-export OKF_ROLLOUT_TOKEN='publisher-write-token'
+export OKF_READ_TOKEN='请替换为高强度读Token'
+export OKF_ROLLOUT_TOKEN='请替换为高强度写Token'
 
 okf --root /data/catalog hosted \
   --host 127.0.0.1 \
@@ -405,63 +200,45 @@ okf --project /data/knowledge/okf.project.yaml hosted \
   --port 8790
 ```
 
-Hosted 要求：
+Hosted 不允许同时启用：
 
-- 两个 Token 非空且不同
-- Token 只能来自环境
-- 不和 `--authoring`、`--write`、`--git-commit`、`--allow-remote-tool`、`--allow-computation-authoring` 一起使用
+```text
+--authoring
+--write
+--git-commit
+--allow-remote-tool
+--allow-computation-authoring
+```
 
-## 7. Hosted 端点
+## 6. Hosted 端点
 
-| 方法 | 路径 | 认证 | 用途 |
-| --- | --- | --- | --- |
-| `GET` | `/health` | 无 | 进程健康检查 |
-| `POST/GET/DELETE` | `/mcp` | 仅读 Token | MCP Streamable HTTP |
-| `GET` | `/v1/rollout/snapshot` | 读或写 Token | 下载活动快照 |
-| `GET` | `/v1/rollout/status` | 读或写 Token | 查询 Revision 和 Generation |
-| `POST` | `/v1/rollout/dry-run` | 仅写 Token | 验证并签发 Preview |
-| `POST` | `/v1/rollout/submit` | 仅写 Token | 发布 Preview |
+| 路径 | 用途 | Token |
+| --- | --- | --- |
+| `/mcp` | MCP Streamable HTTP | 读 Token |
+| `/v1/rollout/snapshot` | 下载活动快照 | 读或写 Token |
+| `/v1/rollout/status` | 查看当前 Revision | 读或写 Token |
+| `/v1/rollout/dry-run` | 服务端预览 | 写 Token |
+| `/v1/rollout/submit` | 发布知识 | 写 Token |
+| `/health` | 健康检查 | 无 |
 
 健康检查：
 
 ```bash
-curl -fsS http://127.0.0.1:8790/health
+curl http://127.0.0.1:8790/health
 ```
 
-## 8. 认证边界
+Token 规则：
 
-MCP 请求：
+- MCP 只接受 `OKF_READ_TOKEN`。
+- `OKF_ROLLOUT_TOKEN` 不能调用 MCP。
+- dry-run 和 submit 只接受写 Token。
+- Token 不要写入 Git、Bundle、Skill 或命令参数。
 
-```http
-Authorization: Bearer <OKF_READ_TOKEN>
-```
+## 7. TLS 和反向代理
 
-- 缺失 Token：`401`
-- 错误 Token：`403`
-- 写 Token 调用 MCP：`403`
+内置 Hosted 服务只提供 HTTP。生产环境建议让它绑定 `127.0.0.1`，再通过 Nginx 或企业网关提供 HTTPS。
 
-Rollout 变更请求：
-
-```http
-Authorization: Bearer <OKF_ROLLOUT_TOKEN>
-```
-
-读 Token 调用 dry-run 或 submit 返回 `403`。
-
-不要在命令参数、Skill、Bundle、Git 或日志中保存 Token。
-
-## 9. TLS 与反向代理
-
-内置 Hosted 监听器只提供 HTTP。生产环境应：
-
-1. Hosted 绑定 `127.0.0.1`。
-2. 反向代理终止 TLS。
-3. 保留 `Authorization` 头。
-4. 允许 `POST`、`GET`、`DELETE`。
-5. 支持流式响应和较长连接。
-6. 避免对 MCP 流进行不必要缓冲。
-
-示例：
+Nginx 示例：
 
 ```nginx
 location / {
@@ -474,55 +251,33 @@ location / {
 }
 ```
 
-## 10. 不可变 Generation 与恢复
+## 8. 其他 MCP 模式
 
-Hosted 从 Generation Store 提供服务，而不是持续读取可修改 Root。
+本地 stdio：
 
-Root 模式默认 Generation Store：
-
-```text
-<root父目录>/.<root目录名>.okf-generations
+```bash
+okf --root /data/catalog mcp
 ```
 
-Project 模式：
+本机 Streamable HTTP 测试：
 
-```text
-<project-root>/.okf-generations
+```bash
+okf --root /data/catalog mcp --http \
+  --host 127.0.0.1 \
+  --port 8766
 ```
 
-结构：
+地址：
 
 ```text
-.okf-generations/
-├── <bundle-id>/
-│   ├── active.json
-│   └── gen_.../
-│       ├── manifest.json
-│       └── files/
-├── previews/
-└── idempotency/
+http://127.0.0.1:8766/mcp
 ```
 
-发布时先写完整候选、构建未来索引、验证，再原子切换活动指针和内存索引。
+`mcp --http` 没有 Hosted 的认证和发布 API，不建议用于生产。非 Loopback 地址默认被拒绝；`--insecure-http` 会关闭该保护。
 
-默认保留最近 5 个 Generation，最少 2 个。这不替代正式备份。
+## 9. MCP Tools
 
-启动时会校验：
-
-- Manifest
-- 文件存在性
-- 普通文件类型
-- 每个文件 SHA-256
-- 字节数
-- 整体 Revision
-- Candidate Digest
-- 完整项目索引
-
-损坏时尝试回退到最近的有效 Generation；如果全部损坏，Hosted 拒绝启动。
-
-## 11. MCP 工具
-
-### 11.1 概念与发现
+Bundle 和概念：
 
 ```text
 list_bundles
@@ -535,7 +290,7 @@ list_relation_types
 list_edge_kinds
 ```
 
-### 11.2 图查询
+图查询：
 
 ```text
 get_graph
@@ -546,76 +301,172 @@ graph_summary
 export_graph
 ```
 
-### 11.3 溯源与资源
+溯源、资源、验证和静态计算：
 
 ```text
 get_provenance
 read_bundle_asset
 read_git_source
-```
-
-### 11.4 静态计算
-
-```text
 inspect_attested_computation
 prepare_attested_computation
 check_computation_receipt
-```
-
-### 11.5 验证与迁移
-
-```text
 check_v02_migration
 validate_bundle
 validate_project
-```
-
-### 11.6 远程 Bundle
-
-```text
 list_remote_bundles
-load_remote_bundle
 ```
 
-`load_remote_bundle` 仅在 `--allow-remote-tool` 下启用，Hosted 不启用。
-
-### 11.7 提案与直接写工具
+Hosted 不提供写入和运行时加载工具，例如：
 
 ```text
-okf_validate_concept
-okf_suggest_concept_path
+load_remote_bundle
 okf_propose_concept
 okf_propose_update
-okf_propose_attested_computation
-okf_propose_v02_migration
-okf_list_proposals
-okf_get_proposal
 okf_accept_proposal
-okf_reject_proposal
 okf_validate_changes
 okf_apply_changes
 ```
 
-这些属于本地创作模式。Hosted 不暴露它们。
+知识发布统一使用 `okf knowledge` CLI。
 
-## 12. MCP 能力门控
+---
 
-| 模式 | 提案 | 直接写 | 计算提案 | 远程加载 |
-| --- | ---: | ---: | ---: | ---: |
-| 默认 stdio/低层 HTTP | 否 | 否 | 否 | 否 |
-| `--authoring` | 是 | 否 | 否 | 否 |
-| `--write --actor ...` | 否 | 是 | 否 | 否 |
-| `--authoring --allow-computation-authoring` | 是 | 否 | 是 | 否 |
-| `--allow-remote-tool` | 否 | 否 | 否 | 是 |
-| `hosted` | 否 | 否 | 否 | 否 |
+# 角色二：发布 OKF 知识
 
-Hosted 只保留读取、搜索、图、溯源、验证和静态计算检查工具。
+## 10. 发布流程
 
-## 13. MCP 客户端配置
+内置 Skill：
 
-### 13.1 通用 Streamable HTTP 配置
+```text
+.agents/skills/okf-knowledge-publisher/SKILL.md
+```
 
-不同客户端 Schema 可能不同，常见形式：
+标准流程：
+
+```text
+download
+  -> enrich
+  -> server dry-run
+  -> explicit confirmation
+  -> submit
+  -> MCP verify
+```
+
+## 11. 下载当前知识
+
+```bash
+export OKF_ROLLOUT_TOKEN='publisher-write-token'
+
+okf knowledge download \
+  --url https://knowledge.internal.example \
+  --out ./okf-work
+```
+
+多个 Bundle 时：
+
+```bash
+okf knowledge download \
+  --url https://knowledge.internal.example \
+  --bundle app \
+  --out ./okf-work
+```
+
+工作区会生成 `.okf-knowledge.json`，用于保存 Revision、Preview 和幂等信息。它不保存 Token，也不要手工修改。
+
+## 12. 编辑知识
+
+在工作区中创建、修改或删除 Markdown 文件。
+
+注意：
+
+- 删除文件表示请求删除远端概念。
+- 不要使用符号链接。
+- 不要编造来源、Schema、URL 或业务事实。
+- 保留不认识的 frontmatter 扩展字段。
+
+## 13. 服务端 Dry-run
+
+```bash
+okf knowledge submit \
+  --workspace ./okf-work \
+  --dry-run
+```
+
+服务端会返回：
+
+- 新增、修改和删除的文件
+- OKF 验证结果
+- 有界 `diffText`
+- Preview ID
+- Candidate Digest
+- Preview 过期时间
+
+默认限制：
+
+```text
+每文件 Diff 最多 8 KiB
+总 Diff 最多 64 KiB
+Preview 有效期 15 分钟
+```
+
+如果 Diff 被截断，应额外检查完整文件。
+
+## 14. 确认并提交
+
+```bash
+okf knowledge submit \
+  --workspace ./okf-work \
+  --preview-id <preview-id> \
+  --message "补充订单取消流程"
+```
+
+CLI 会再次显示服务端 Diff，并要求输入 `y` 或 `yes`。
+
+如果 Preview 后工作区发生变化，需要重新 dry-run。
+
+自动化可以显式使用 `--yes`，但它不会绕过 Preview、Revision、Digest、验证或幂等检查。
+
+## 15. 处理 409 冲突
+
+收到 `409 Conflict` 时：
+
+1. 停止提交。
+2. 重新下载最新快照。
+3. 合并本地修改。
+4. 重新 dry-run。
+5. 重新人工确认。
+6. 使用新的 Preview 提交。
+
+不要强制覆盖。当前没有 `--force`，也没有服务器端自动合并。
+
+## 16. 发布后验证
+
+查看状态：
+
+```bash
+okf knowledge status \
+  --url https://knowledge.internal.example \
+  --bundle app \
+  --json
+```
+
+然后通过 MCP 调用：
+
+```text
+get_concept
+search_concepts
+get_neighbors 或 get_graph
+```
+
+如果 submit 已成功但 MCP 暂时不可用，不要重复提交。记录已发布 Revision，稍后重新验证。
+
+---
+
+# 角色三：配置 Agent 使用知识
+
+## 17. Streamable HTTP 配置
+
+不同 Agent 平台的配置格式可能不同。常见形式：
 
 ```json
 {
@@ -631,24 +482,16 @@ Hosted 只保留读取、搜索、图、溯源、验证和静态计算检查工�
 }
 ```
 
-其他客户端可能使用：
+有些客户端不需要 `transport` 字段，请以客户端文档为准。
 
-```json
-{
-  "mcpServers": {
-    "okf": {
-      "url": "https://knowledge.internal.example/mcp",
-      "headers": {
-        "Authorization": "Bearer <OKF_READ_TOKEN>"
-      }
-    }
-  }
-}
-```
+必须满足：
 
-应查阅具体客户端文档，不要假定字段名完全一致。
+- URL 指向 `/mcp`。
+- 使用 MCP Streamable HTTP。
+- 请求带 `Authorization: Bearer <OKF_READ_TOKEN>`。
+- 不要给业务 Agent 配置 `OKF_ROLLOUT_TOKEN`。
 
-### 13.2 stdio 配置
+## 18. stdio 配置
 
 ```json
 {
@@ -666,501 +509,161 @@ Hosted 只保留读取、搜索、图、溯源、验证和静态计算检查工�
 }
 ```
 
-### 13.3 工具调用顺序
-
-推荐 Agent 首先执行：
+## 19. 推荐查询顺序
 
 ```text
 list_bundles
-  -> search_concepts / list_concepts
+  -> search_concepts 或 list_concepts
   -> get_concept
-  -> get_neighbors / get_graph
+  -> get_neighbors 或 get_graph
   -> get_provenance
 ```
 
-MCP 客户端会完成：
+MCP 客户端会自动处理初始化、工具发现和资源读取，不建议用普通 `curl` 手工模拟完整 MCP 会话。
+
+---
+
+## 20. Generation 和备份
+
+Hosted 使用不可变 Generation 提供知识，不会持续读取原始 Bundle Root。
+
+默认目录：
 
 ```text
-initialize
-notifications/initialized
-tools/list
-resources/list
-tools/call
-resources/read
+Root 模式:    <root父目录>/.<root目录名>.okf-generations
+Project 模式: <project-root>/.okf-generations
 ```
 
-不要手工用 `curl` 模拟完整 MCP Session。普通健康检查和 Rollout 状态可以使用 `curl`。
+发布时会验证完整候选，然后原子切换活动 Generation 和 MCP 索引。
 
-# 第三部分：Publisher 角色
+注意：
 
-## 14. 发布工作流
+- 当前 Hosted CLI 默认不会把发布内容回写到原始 Bundle Root。
+- 备份和状态检查应以 Generation Store 为准。
+- 活动 Generation 损坏时会尝试回退。
+- 全部 Generation 损坏时 Hosted 拒绝启动。
+- 默认保留数量有限，不能替代正式备份。
 
-内置 Skill：
+## 21. 数据库直接生成 OKF Bundle
 
-```text
-.agents/skills/okf-knowledge-publisher/SKILL.md
-```
-
-严格流程：
-
-```text
-download
-  -> enrich
-  -> server dry-run
-  -> explicit confirmation
-  -> submit
-  -> MCP verify
-```
-
-### 14.1 设置写 Token
+安装并配置 dbexplain v0.1.11 或更高版本后，先检查运行时和配置选择。兼容的
+未来版本无需更新 okf-mcp；CLI/JSON 契约变化时会返回 issue 地址。Agent 不读取
+`.env.dbexplain` 内容；显式配置文件通过子进程环境变量传递：
 
 ```bash
-export OKF_ROLLOUT_TOKEN='publisher-write-token'
+dbexplain --version
+okf dbexplain --help
+okf dbexplain inspect --include prod-main
+okf dbexplain check --include prod-main
 ```
 
-### 14.2 下载
+配置中的每个 SQL DSN 都必须有唯一且稳定的 `?label=`。一个同步可以选择多个
+label，生成一个专用 Bundle。首版 query-ready 生成支持 MySQL、PostgreSQL、
+GaussDB、SQLite 和 Oracle；其他数据库类型会在写入前失败。
+
+先做不写文件的预览：
 
 ```bash
-okf knowledge download \
-  --url https://knowledge.internal.example \
-  --out ./okf-work
-```
-
-多 Bundle：
-
-```bash
-okf knowledge download \
-  --url https://knowledge.internal.example \
-  --bundle app \
-  --out ./okf-work
-```
-
-工作区会包含权限为 `0600` 的：
-
-```text
-.okf-knowledge.json
-```
-
-它保存：
-
-- URL
-- Bundle
-- Base Revision
-- Generation ID
-- 文件摘要
-- Preview
-- 幂等键
-- bounded diff
-
-不保存 Token。
-
-### 14.3 Enrich
-
-在工作区内编辑 Markdown：
-
-- 保留未知字段
-- 不虚构事实
-- 保持路径稳定
-- 不使用符号链接
-- 删除文件表示请求删除该概念
-- 非 Markdown 文件不属于 Rollout 候选快照
-
-### 14.4 服务端 Dry-run
-
-```bash
-okf knowledge submit \
-  --workspace ./okf-work \
+okf dbexplain sync \
+  --include prod-main \
+  --bundle-root /data/okf/prod-database \
+  --generated-at 2026-08-25T09:00:00Z \
   --dry-run
 ```
 
-JSON 输出：
+确认 `changes`、声明/推断关系数量、Observation 刷新数和 OKF 验证结果后，用原
+参数和 `planDigest` 写入：
 
 ```bash
-okf knowledge submit \
-  --workspace ./okf-work \
-  --dry-run \
-  --json
+okf dbexplain sync \
+  --include prod-main \
+  --bundle-root /data/okf/prod-database \
+  --generated-at 2026-08-25T09:00:00Z \
+  --expect-plan sha256:<plan-digest>
+
+okf dbexplain validate --bundle-root /data/okf/prod-database
 ```
 
-服务端返回：
+apply 会重新采集。只有运行指标变化时 Observation 使用最新值；结构或关系变化
+会返回 `planChanged: true` 并保持旧 Bundle 不变，需要重新 dry-run 和确认。
 
-- 路径变更
-- `diffText`
-- `diffTruncated`
-- Validation 诊断
-- Submitted Revision
-- Current Revision
-- Preview ID
-- Candidate Digest
-- 过期时间
+生成结果的核心边界：
 
-默认 Preview 有效期为 15 分钟。
+- 表路径为 `tables/<label>/<namespace>/<table>.md`，仅在碰撞时追加 hash。
+- Table 带 binding v2、方言化 source 和逐列 SQL 标识符；声明 FK 带结构化 Join
+  模板和机械校验的 cardinality。
+- 推断引用是 `draft` 且未验证，不是批准的业务 Join。
+- 行数、容量、运行统计和诊断与 Table Schema 分离。
+- 消失对象保留并标记 `deprecated`，再次出现时恢复原身份。
+- 不保存原始 JSON、DSN、主机、凭据、Sample Rows 或配置内容。
+- 物理目录按 label/database 生成分层 reserved indexes；overlay 只生成空索引，模板留在 Skills，避免污染 MCP 搜索。
+- `semantic.profile: dbexplain-okf-v1` 是原样保存的扩展；同一知识同时投影到现有 `relations` 和 Markdown body，通用 okf-mcp 无需理解数据库字段。
+- Agent 生成的 Saved Query 必须先经 `dbexplain execute` 成功执行并由用户确认，再记录 SQL digest verification；结果行不进入 Bundle。
+- 内置 `okf-dbexplain` Skill 只同步物理事实层；`okf-bundle-business` Skill 在用户明确业务范围后补充 business 覆盖层。
 
-默认 Diff 限制：
+## 22. 常见错误
 
-```text
-每文件 8 KiB
-总计 64 KiB
-```
-
-若出现截断标记，必须额外审查未显示部分。
-
-### 14.5 明确确认
-
-Dry-run 成功不等于批准。
-
-有效确认：
-
-```text
-确认提交
-```
-
-工作区在 Preview 后发生变化时，必须重新 dry-run 并重新确认。
-
-### 14.6 Submit
-
-```bash
-okf knowledge submit \
-  --workspace ./okf-work \
-  --preview-id <preview-id> \
-  --message "补充订单取消流程"
-```
-
-CLI 会再次显示保存的服务端 Diff，然后要求输入 `y` 或 `yes`。
-
-无人值守场景可添加：
-
-```bash
---yes
-```
-
-但不能绕过 Preview、Digest、Revision、验证和幂等检查。
-
-## 15. Preview 与幂等性
-
-Preview 绑定：
-
-- Principal
-- Bundle
-- Base Revision
-- Candidate Digest
-- Canonical Request Digest
-- 文件数量
-- 完整文件内容
-- 过期时间
-
-相同幂等 Key 和相同请求会返回同一结果。相同 Key 用于不同请求返回 `409`。
-
-响应丢失或进程在活动指针切换后中断时，相同 Submit 重试会通过持久化日志恢复确定结果。
-
-## 16. 409 处理
-
-出现 `409 Conflict` 时：
-
-1. 停止。
-2. 不强制覆盖。
-3. 下载最新快照。
-4. 重新合并修改。
-5. 再次 dry-run。
-6. 展示新 Diff。
-7. 重新确认。
-8. 使用新 Preview 提交。
-
-当前不支持自动三方合并，也没有 `--force`。
-
-## 17. 发布后验证
-
-发布后：
-
-1. 用 `okf knowledge status` 确认活动 Revision。
-2. 用 MCP `get_concept` 读取变更概念。
-3. 用 `search_concepts` 确认可检索。
-4. 用 `get_neighbors` 或 `get_graph` 确认关系。
-
-示例：
-
-```bash
-okf knowledge status \
-  --url https://knowledge.internal.example \
-  --bundle app \
-  --json
-```
-
-如果发布成功但 MCP 暂时不可用，不要重复 Submit；应报告已发布 Revision 和验证失败。
-
-# 第四部分：Legacy `serve`
-
-## 18. 与 Hosted 区别
-
-推荐：
-
-```bash
-okf --root /data/catalog hosted
-```
-
-Legacy：
-
-```bash
-OKF_WRITE_TOKEN=change-me \
-okf --root /data/catalog serve \
-  --host 127.0.0.1 \
-  --port 8765
-```
-
-`serve` 是旧提案 REST API，不是 MCP Transport，也不提供不可变 Snapshot Rollout。
-
-不要让 `serve` 和 `hosted` 同时修改同一 Root。
-
-# 第五部分：故障排查
-
-## 19. 常见问题
-
-| 状态 | 含义 | 处理 |
+| 错误 | 原因 | 处理 |
 | --- | --- | --- |
-| `401` | 缺少 Token | 设置正确环境变量和 Authorization 头 |
-| `403` | Token 错误或角色错误 | MCP 用读 Token；发布用写 Token |
-| `409` | Revision 过期或幂等 Key 冲突 | 重新下载、合并、dry-run、确认 |
-| `422` | Preview、Digest、路径或 OKF 验证失败 | 查看 Details，修复后重新 dry-run |
-| `404` | Bundle、Preview 或资源不存在 | 使用 `list_bundles` 确认 |
-| Preview expired | 超过默认 15 分钟 | 重新 dry-run 并确认 |
-| Diff truncated | Diff 达到边界 | 额外审查源文件或拆分发布 |
-| MCP 不可用 | URL、TLS、Token 或代理错误 | 确认 `/mcp`、读 Token 和 Streamable HTTP |
-| Root 修改不生效 | Hosted 不监听 Root | 通过 `okf knowledge` 发布 |
-| Hosted 回退 | 活动 Generation 损坏 | 检查磁盘并从备份恢复 |
-| Hosted 拒绝启动 | 所有 Generation 损坏 | 恢复完整 Generation Store |
-| 工作区符号链接 | CLI 安全拒绝 | 改用普通文件和目录 |
-| 请求过大 | Hosted 请求体上限 8 MiB | 减少 Bundle 或拆分 Bundle |
+| `401` | 没有 Token | 配置正确的 Token |
+| `403` | Token 错误或角色不对 | MCP 用读 Token，发布用写 Token |
+| `409` | Revision、Preview 或幂等冲突 | 重新下载并 dry-run |
+| `422` | Preview、Digest、路径或验证失败 | 按错误详情修复 |
+| `404` | Bundle、Preview 或资源不存在 | 用 `list_bundles` 核对 |
+| Preview expired | 超过 15 分钟 | 重新 dry-run |
+| Diff truncated | Diff 超过限制 | 检查完整文件 |
+| MCP 无法连接 | URL、TLS、代理或 Token 错误 | 检查 `/mcp` 和读 Token |
+| 修改 Root 不生效 | Hosted 不监听 Root | 使用 Publisher 流程 |
+| Hosted 拒绝启动 | Generation 损坏 | 从备份恢复 |
+| 请求过大 | 超过 8 MiB | 减少内容或拆分 Bundle |
 
-# 第六部分：安全与生产清单
+## 23. 生产检查清单
 
-## 20. 安全清单
-
-- [ ] Hosted 绑定 Loopback。
-- [ ] 外部访问通过 TLS 反向代理。
-- [ ] 读写 Token 不同。
-- [ ] Token 为高熵随机值。
-- [ ] Token 不进入 argv、Git、Skill、Bundle 或日志。
-- [ ] MCP Agent 只获得读 Token。
-- [ ] Publisher 只获得写 Token。
-- [ ] Generation Store 限制文件系统权限。
-- [ ] 不直接编辑 Generation。
-- [ ] 不运行多个 Hosted 写进程指向同一 Generation Store。
-- [ ] 不使用 `mcp --http --insecure-http` 作为生产方案。
-- [ ] 定期备份 Generation Store。
-- [ ] 对 Diff 截断设置强制复核规则。
-
-## 21. 生产检查
-
-- [ ] 固定到经过验证的完整 Commit SHA。
-- [ ] 记录源码声明版本 `0.9.0`。
-- [ ] 明确记录 `formal_release=false`，直到正式 Tag/Release 创建。
+- [ ] 固定到完整 Git Commit SHA。
 - [ ] `npm test` 通过。
 - [ ] `npm run self:validate` 通过。
 - [ ] `npm run package:smoke` 通过。
-- [ ] Root 或 Project 验证通过。
-- [ ] TLS 有效。
-- [ ] 未认证 MCP 返回 401。
-- [ ] 写 Token 调用 MCP 返回 403。
-- [ ] 读 Token 调用 dry-run 返回 403。
+- [ ] `npm run pack:check` 通过。
+- [ ] Hosted 绑定 Loopback，并通过 HTTPS 暴露。
+- [ ] 读写 Token 非空且不同。
+- [ ] Agent 只有读 Token。
+- [ ] Publisher 只有写 Token。
 - [ ] Generation Store 已备份。
-- [ ] Submit 后 MCP 立即看到新内容。
-- [ ] 重启后仍服务同一活动 Generation。
+- [ ] submit 后 MCP 能读取新内容。
+- [ ] 重启后仍使用相同活动 Revision。
 
-# 第七部分：10 分钟最小演示
+## 24. 当前限制
 
-## 22. 准备 Bundle
+- Hosted 是单进程、单写入者服务。
+- 不支持多个写实例共享 Generation Store。
+- 不支持分布式锁和服务器端自动合并。
+- 请求体默认上限为 8 MiB。
+- 一次候选最多 5000 个 Markdown 文件。
+- 没有内置 TLS。
+- 没有向量数据库或 Embedding 服务。
+- Hosted 不开放 MCP 写工具和运行时远程 Bundle 加载。
+- Attested Computation 仅做静态检查，不执行计算。
 
-```bash
-mkdir -p /tmp/okf-demo
-```
+## 25. 版本和上游
 
-创建 `index.md`：
-
-```markdown
----
-okf_version: "0.2"
----
-
-# Demo Knowledge
-
-- [Alpha](./alpha.md)
-```
-
-创建 `alpha.md`：
-
-```markdown
----
-type: Spec
-title: Alpha
-description: Initial demo concept.
----
-
-# Alpha
-
-Initial knowledge.
-```
-
-验证：
-
-```bash
-okf --root /tmp/okf-demo validate
-```
-
-## 23. 启动 Hosted
-
-```bash
-export OKF_READ_TOKEN='demo-read-token'
-export OKF_ROLLOUT_TOKEN='demo-write-token'
-
-okf --root /tmp/okf-demo hosted \
-  --host 127.0.0.1 \
-  --port 8790
-```
-
-## 24. 下载与编辑
-
-```bash
-export OKF_ROLLOUT_TOKEN='demo-write-token'
-
-okf knowledge download \
-  --url http://127.0.0.1:8790 \
-  --out /tmp/okf-work
-```
-
-新增 `/tmp/okf-work/beta.md`：
-
-```markdown
----
-type: Spec
-title: Beta
-description: Newly published demo concept.
----
-
-# Beta
-
-Published through the controlled rollout workflow.
-```
-
-## 25. Dry-run 与提交
-
-```bash
-okf knowledge submit \
-  --workspace /tmp/okf-work \
-  --dry-run
-```
-
-确认 Diff 后：
-
-```bash
-okf knowledge submit \
-  --workspace /tmp/okf-work \
-  --preview-id <preview-id> \
-  --message "add beta demo concept"
-```
-
-输入：
+当前源码版本：
 
 ```text
-yes
+0.9.0
 ```
 
-## 26. MCP 验证
-
-配置：
-
-```json
-{
-  "mcpServers": {
-    "okf-demo": {
-      "transport": "streamable-http",
-      "url": "http://127.0.0.1:8790/mcp",
-      "headers": {
-        "Authorization": "Bearer demo-read-token"
-      }
-    }
-  }
-}
-```
-
-调用：
+当前最高 Git Tag：
 
 ```text
-list_bundles
-search_concepts
-get_concept
-get_neighbors
+v0.8.0
 ```
 
-# 第八部分：限制与上游归属
-
-## 27. Hosted 限制
-
-- 单进程
-- 单写入协调器
-- 不支持分布式锁
-- 不支持多个写实例共享 Generation Store
-- 不支持自动三方合并
-- 不支持分片上传
-- 请求体默认上限 8 MiB
-- 候选最多 5000 个 Markdown 文件
-- 无数据库
-- 无向量搜索
-- 无内置 TLS
-- 无文件 Watcher
-- Generation 保留有限，不替代正式备份
-- Attested Computation 只做静态检查
-- Hosted 不开放 MCP 写工具
-- Hosted 不开放运行时远程 Bundle 加载
-
-## 28. 版本与正式发布状态
-
-当前源码声明：
-
-```text
-version: 0.9.0
-```
-
-当前尚未存在：
-
-```text
-Git Tag: v0.9.0
-GitHub Release: v0.9.0
-npm: @doctormacky/okf-mcp@0.9.0
-```
-
-在正式发布前，文档、部署清单和运行包应使用：
-
-```text
-0.9.0 + 完整 Git Commit SHA
-```
-
-作为可复现身份。
-
-当未来创建正式 `v0.9.0` Tag 或 GitHub Release 时，应确保：
-
-1. Tag 指向已通过全部测试的精确 Commit。
-2. Release 归档与该 Commit 一致。
-3. `package.json`、`package-lock.json` 和 `server.json` 版本一致。
-4. `npm test`、`self:validate` 和 `package:smoke` 全部通过。
-5. 如发布 npm 包，先验证精确包名和版本。
-6. 只有 npm 包真实存在且通过干净 `npx` 验证后，才提交 MCP Registry 元数据。
-
-## 29. 上游归属
+目前没有 `v0.9.0` Tag、GitHub Release 或正式 npm 包。生产部署请使用 `0.9.0 + 完整 Git Commit SHA`。
 
 本 fork 基于：
 
 ```text
 https://github.com/mfdaves/okf-mcp
 ```
-
-当前 fork 增加了：
-
-- 企业快速发布
-- 不可变 Generation
-- 认证 Hosted 模式
-- Publisher Skill
-- `okf knowledge` CLI
-- bounded 服务端 Diff
-- 发布恢复和幂等日志
 
 项目继续遵循 MIT License，并保留原项目及贡献者署名。

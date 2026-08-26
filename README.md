@@ -1,200 +1,159 @@
 # okf-mcp
 
-> This repository extends the original [mfdaves/okf-mcp](https://github.com/mfdaves/okf-mcp) project for an enterprise quick-rollout workflow. The original project and its contributors remain credited under the MIT License.
+[English](README.md) · [简体中文](README_zh.md)
 
-`okf-mcp` is a local-first consumer, validator, graph index, CLI, and MCP server for [Open Knowledge Format v0.2](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md).
+Local runtime for [Open Knowledge Format v0.2](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md): validate bundles, search concepts, expose knowledge over **MCP**, and build **database Bundles** from [dbexplain](https://github.com/IamWWT/dbexplain) for agent NL2SQL.
 
-It consumes an OKF bundle directory of Markdown files with YAML frontmatter. An optional workspace mode can federate several bundles. Concepts are exposed through CLI commands and MCP resources and tools for validation, structured search, graph navigation, provenance inspection, and proposal-based authoring.
+> Fork of [mfdaves/okf-mcp](https://github.com/mfdaves/okf-mcp) (MIT). Enterprise rollout extensions: hosted Streamable HTTP MCP, immutable knowledge generations, `okf dbexplain`, and bundled Agent Skills.
 
-The core intentionally has no database, embeddings, build step, or hosted-service dependency. It uses `js-yaml` for safe YAML, CommonMark for Markdown structure, MiniSearch for in-memory BM25+ text retrieval, and the official Model Context Protocol TypeScript SDK v2 for stdio MCP. Local root mode makes no network calls. Optional remote loading fetches public Markdown concepts and only their explicitly referenced inert assets from GitHub. Nothing in the v0.2 computation support executes code or attests a receipt.
+---
 
-## OKF v0.2 Support And Extensions
+## What you get
 
-OKF v0.2 intentionally specifies a portable file format, not a serving or query runtime. `okf-mcp` keeps that boundary explicit:
+| Piece | Role |
+| --- | --- |
+| **`okf` CLI** | Validate, search, sync database Bundles, publish knowledge |
+| **MCP server** | Agents retrieve OKF concepts (schemas, business semantics, saved SQL) |
+| **Built-in Skills** | Guided workflows for sync, business overlays, and publishing |
 
-| Area | Official OKF v0.2 | okf-mcp behavior |
+No database server, vector DB, or embeddings required for the runtime itself.
+
+---
+
+## Prerequisites
+
+| Dependency | Required for | Install |
 | --- | --- | --- |
-| Bundle and identity | A directory tree of Markdown files; a Concept ID is its bundle-relative path without `.md` | `--root` maps directly to one bundle; `okf://` is an optional workspace locator, not the portable Concept ID |
-| Concept metadata | Required `type`; recommended `title`, `description`, `resource`, and `tags`; unknown keys are allowed | Preserves extension fields and unknown types while reporting normative conformance separately from workspace policy |
-| Provenance and lifecycle | `sources`, `usage_window`, `generated`, `verified`, `status`, and `stale_after` | Normalizes these fields for search, provenance traversal, trust tiers, and deterministic freshness checks |
-| References | Markdown links and path-valued `resource`, `sources[].resource`, `computation`, `executor.resource`, and `attester.resource` fields | Builds graph edges and bounded inert asset snapshots without executing or implicitly fetching referenced code |
-| Attested Computation | Defines contract fields and an informative consumer flow while deferring runtime wire protocols and attester packaging | Statically inspects contracts and digests, checks declared parameter and receipt field names, and never executes or claims attestation |
-| v0.1 compatibility | Allows `timestamp` fallback when the whole `generated` mapping is absent and `# Citations` fallback when the `sources` key is absent | Consumes both forms and adds review-only migration checks and proposals |
+| **Node.js ≥ 22** | `okf` / MCP | [nodejs.org](https://nodejs.org/) |
+| **[dbexplain ≥ v0.1.11](https://github.com/IamWWT/dbexplain)** | `okf dbexplain sync`, business Skill probes | Newer compatible releases are accepted; put `dbexplain` on `PATH` |
+| **`.env.dbexplain`** (or DSN) | dbexplain connectivity | User-maintained; Skills never read or edit it |
+| **Git** | Source install | Optional for tarball deploy |
 
-The following are okf-mcp extensions rather than requirements of the format:
-
-- CLI, MCP, and HTTP interfaces; in-memory search and graph views
-- optional multi-bundle `okf.project.yaml` workspaces and typed `relations`
-- compatibility `id`, `aliases`, and `okf://` locators
-- proposal-backed authoring with explicit acceptance
-- bounded GitHub remote loading and explicitly mapped pinned Git sources
-- generator plugins and stricter opt-in project policies such as `strictLinks`
-
-## Install And Run
-
-Node 22 or newer is required.
-
-### Run From Source Without An npm Registry
-
-An internal npm registry is not required. Install dependencies once on a build machine, then distribute the complete runtime directory, including `node_modules`:
+Check:
 
 ```bash
-git clone https://github.com/doctormacky/okf-mcp.git
-cd okf-mcp
-npm ci --omit=dev
-node bin/okf-mcp.js --version
+node --version          # v22+
+command -v dbexplain && dbexplain --version
 ```
 
-The runtime can then be copied to an agent host and invoked directly:
+---
 
-```bash
-node /opt/okf-mcp/bin/okf-mcp.js --version
-node /opt/okf-mcp/bin/okf-mcp.js knowledge --help
+## Quick start (database Bundle → NL2SQL)
+
+Typical path for SmartAdmin / Taiyi-style databases:
+
+```text
+1. Install okf-mcp + dbexplain
+2. $okf-dbexplain     → sync physical facts into a Bundle directory
+3. $okf-bundle-business → add business semantics (multi-round, user-approved)
+4. Point okf-mcp at the Bundle → other agents search & assemble SQL
 ```
 
-For a stable command, install a small wrapper at `/usr/local/bin/okf`:
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-exec node /opt/okf-mcp/bin/okf-mcp.js "$@"
-```
-
-The agent Skill checks this command and its version, but never installs or upgrades the runtime automatically.
-
-Install from the GitHub release:
+### 1. Install okf-mcp
 
 ```bash
 git clone https://github.com/doctormacky/okf-mcp.git
 cd okf-mcp
 npm ci
-node bin/okf-mcp.js --root ./path/to/okf validate
+npm link                    # optional: register `okf` on PATH
+okf --version
 ```
 
-The fork is currently distributed from source rather than an npm registry. Pin a Git commit or release archive for reproducible deployment. The upstream npm package remains available for upstream-only features, but it does not include this fork's hosted rollout extensions.
+Extended install, update, and rollback guide (Chinese): [docs/OKF_CLI_SOURCE_INSTALL_UPDATE_ZH.md](docs/OKF_CLI_SOURCE_INSTALL_UPDATE_ZH.md).
+
+### 2. Sync physical layer (Skill or CLI)
+
+Prepare dbexplain ([releases](https://github.com/IamWWT/dbexplain)), then:
+
+```text
+$okf-dbexplain
+Inspect prod-main and sync to /data/okf/my-database
+```
+
+Or manually:
 
 ```bash
-git clone https://github.com/doctormacky/okf-mcp.git
-cd okf-mcp
-git checkout <commit-or-tag>
-npm ci --omit=dev
+okf dbexplain check --include prod-main
+okf dbexplain sync \
+  --include prod-main \
+  --bundle-root /data/okf/my-database \
+  --generated-at 2026-08-26T09:00:00Z \
+  --dry-run
+# review plan → apply with --expect-plan <digest>
+okf dbexplain validate --bundle-root /data/okf/my-database
 ```
 
-To work from the current source branch:
+### 3. Add business semantics
+
+```text
+$okf-bundle-business
+Bundle: /data/okf/my-database
+label: prod-main
+Task: total token usage for user XXXX in May 2026
+Propose the logic and example SQL first; write only after I approve.
+```
+
+After writes:
 
 ```bash
-git clone https://github.com/doctormacky/okf-mcp.git
-cd okf-mcp
-npm ci
-npm test
-node bin/okf-mcp.js --version
+okf dbexplain overlay-index --bundle-root /data/okf/my-database
+okf dbexplain validate --bundle-root /data/okf/my-database
 ```
 
-`--root` accepts one local OKF bundle directory and is the recommended okf-mcp interface for a single bundle. The portable identity of each concept is its extensionless path inside that root.
+Skill details: [docs/SKILLS.md](docs/SKILLS.md).
 
-`--bundle` accepts either a path or `id=path`. Multiple flags remain supported for compatibility. `--project` and its `bundles:` list are an optional okf-mcp federation/authoring extension, not part of OKF v0.2.
+### 4. Connect an MCP client
 
-`--remote-bundle` accepts `id=https://github.com/<owner>/<repo>/tree/<ref>/<path>`. It fetches public Markdown first, then only bundle-local files explicitly named by standard v0.2 resource fields. Remote content remains read-only and inert.
+See [MCP modes](#mcp-modes) below. Restart or reload after Bundle changes.
 
-`--inspect` prints a compact graph summary and exits. Without `--inspect` and without an explicit command, the process starts a stdio MCP server.
+---
 
-The package exposes both `okf` and `okf-mcp` binaries when installed. Without an explicit source, the CLI first discovers the nearest root `index.md` declaring `okf_version`; nearest-project discovery remains a compatibility fallback.
+## Built-in Agent Skills
 
-CLI exit statuses are `0` for success, `1` for validation or operational failure, and `2` for invalid usage. Unknown options are rejected.
+Skills live under `.agents/skills/`. Register them in your agent host (Cursor, Codex, etc.).
 
-## Included OKF Reference
+| Skill | When to use | You say (example) |
+| --- | --- | --- |
+| **[okf-dbexplain](.agents/skills/okf-dbexplain/)** | First-time or refresh **physical** Bundle from dbexplain | `$okf-dbexplain sync prod-main to /data/okf/my-db` |
+| **[okf-bundle-business](.agents/skills/okf-bundle-business/)** | Add/update **business** layer on an existing Bundle (NL2SQL) | `$okf-bundle-business update business on test-bundle for token usage` |
+| **[okf-knowledge-publisher](.agents/skills/okf-knowledge-publisher/)** | Publish/update **central** OKF knowledge via `okf knowledge` + hosted MCP | `$okf-knowledge-publisher publish workspace to server` |
 
-This repository publishes a self-describing OKF bundle for the product, its runtime boundaries, interfaces, authoring workflows, and safety policy. Its portable entry Concept ID is `overview/okf-mcp`; `okf://okf-mcp/overview/okf-mcp` remains the workspace/MCP resource locator.
+Also shipped: **[okf-v02-migration](.agents/skills/okf-v02-migration/)** — only when migrating legacy v0.1 catalogs to v0.2.
 
-Validate and query the bundled reference from a checkout or installed package:
+**Workflow rule:** physical facts (`okf-dbexplain`) → business semantics (`okf-bundle-business`) → MCP retrieval. Do not let one Skill guess the other's job.
 
-```bash
-okf --root okf/bundles/okf-mcp validate
-okf --root okf/bundles/okf-mcp search "proposal"
-okf --root okf/bundles/okf-mcp concept overview/okf-mcp
-```
+Full reference: [docs/SKILLS.md](docs/SKILLS.md) · [docs/SKILLS_ZH.md](docs/SKILLS_ZH.md)
 
-Load the reference bundle directly from this release:
+---
 
-```bash
-okf --remote-bundle okf-mcp=https://github.com/doctormacky/okf-mcp/tree/main/okf/bundles/okf-mcp --inspect
-```
+## MCP modes
 
-Source runtime archives include both `okf.project.yaml` and the complete reference bundle.
+stdio and Streamable HTTP expose **the same tools** when started with the **same flags**. For database NL2SQL, the default read-only profile is enough.
 
-## Optional Multi-Bundle Project Config
+Full tool catalog: [docs/MCP_TOOLS.md](docs/MCP_TOOLS.md) · [docs/MCP_TOOLS_ZH.md](docs/MCP_TOOLS_ZH.md)
 
-Use `okf.project.yaml` only when one process must federate multiple roots, configure generators, or enforce a project-wide relation vocabulary:
+| Mode | Command | Best for |
+| --- | --- | --- |
+| **stdio MCP** | `okf --root <bundle> mcp` | Cursor, Claude Desktop, local IDE agents |
+| **Streamable HTTP (dev)** | `okf --root <bundle> mcp --http` | Local HTTP client testing (loopback) |
+| **Streamable HTTP (hosted)** | `okf hosted --root <bundle>` | Team server; bearer auth + immutable generations |
 
-```yaml
-project: Example
-strictLinks: false
-bundles:
-  - id: app
-    root: okf/bundles/app
-    include: ["**/*.md"]
-    exclude: ["archive/**"]
-  - id: data
-    root: okf/bundles/data
-relationTypes:
-  - deployed_by
-remoteBundles:
-  - id: shared
-    url: https://github.com/example/okf-atlas/tree/main/bundles/shared
-    include: ["public/**"]
-    exclude: ["drafts/**"]
-plugins:
-  - name: docs
-    type: filesystem
-    root: docs
-    output: okf/bundles/app/generated/docs
-    bundle: app
-```
+### Tools (read-only — all three modes above)
 
-Run project commands:
+| Category | Tools |
+| --- | --- |
+| **Discovery** | `list_bundles`, `list_concepts`, `search_concepts`, `get_concept`, `list_types`, `list_tags`, `list_relation_types`, `list_edge_kinds`, `list_remote_bundles` |
+| **Graph** | `get_graph`, `get_neighbors`, `get_subgraph`, `find_paths`, `graph_summary`, `export_graph`, `get_provenance` |
+| **Validation** | `validate_bundle`, `validate_project`, `check_v02_migration` |
+| **Assets / computation** | `read_bundle_asset`, `read_git_source`, `inspect_attested_computation`, `prepare_attested_computation`, `check_computation_receipt` |
 
-```bash
-okf --project okf.project.yaml validate
-okf --project okf.project.yaml search "orders"
-okf --project okf.project.yaml graph mermaid
-okf --project okf.project.yaml generate
-okf --project okf.project.yaml mcp
-okf --project okf.project.yaml mcp --authoring
-okf --project okf.project.yaml mcp --allow-remote-tool
-OKF_WRITE_TOKEN=change-me okf --project okf.project.yaml serve
-okf --remote-bundle shared=https://github.com/example/okf-atlas/tree/main/bundles/shared --inspect
-```
+**Resources:** `okf-documents` template — read any indexed Markdown concept by `okf://` URI.
 
-Commands:
+**NL2SQL workflow:** `search_concepts` → `get_concept` → `get_neighbors` → assemble SQL from saved queries in `queries/`.
 
-- `mcp`
-- `validate`
-- `graph [json|dot|mermaid]`
-- `search <query>`
-- `concept <concept-id-or-locator>`
-- `neighbors <concept-id-or-locator>`
-- `paths <from> <to>`
-- `provenance <uri>`
-- `edge-kinds`
-- `computation inspect|prepare|check-receipt`
-- `asset <okf-asset-uri>`
-- `source <concept-id-or-locator> <source-id>`
-- `migrate check|preview`
-- `generate`
-- `serve`
+Optional write/authoring tools (`okf_propose_*`, `okf_apply_changes`, `load_remote_bundle`) are available on **local stdio/HTTP only** with extra flags; **hosted omits them**. Knowledge publishing uses `okf knowledge` CLI, not MCP writes.
 
-`serve` options:
-
-- `--host <host>`: bind host, default `127.0.0.1`
-- `--port <port>`: bind port, default `8765`
-- `--write-token <token>`: bearer token for write endpoints; defaults to `OKF_WRITE_TOKEN`
-- `--proposal-root <path>`: proposal JSON directory; defaults to `.okf-proposals` under the selected local root or project
-
-## MCP Client Config
-
-The fork is source-distributed. Point the MCP client at the checked-out executable with an absolute path.
-
-Example client configuration:
+### stdio (local agent)
 
 ```json
 {
@@ -204,7 +163,7 @@ Example client configuration:
       "args": [
         "/absolute/path/to/okf-mcp/bin/okf-mcp.js",
         "--root",
-        "/absolute/path/to/okf",
+        "/absolute/path/to/your/bundle",
         "mcp"
       ]
     }
@@ -212,542 +171,78 @@ Example client configuration:
 }
 ```
 
-Project config mode, with read-only project helpers but without proposal mutations:
+Or after `npm link`:
 
 ```json
 {
   "mcpServers": {
     "okf": {
-      "command": "node",
-      "args": [
-        "/absolute/path/to/okf-mcp/bin/okf-mcp.js",
-        "--project",
-        "/absolute/path/to/repo/okf.project.yaml",
-        "mcp"
-      ]
+      "command": "okf",
+      "args": ["--root", "/absolute/path/to/your/bundle", "mcp"]
     }
   }
 }
 ```
 
-Add `--authoring` to enable proposal creation, acceptance, and rejection. For a smaller direct-write surface, add `--write --actor <actor>` to expose read-only `okf_validate_changes` and validated-batch `okf_apply_changes`; add `--git-commit` to commit each successful batch when the catalog is in a clean Git worktree. Add `--allow-remote-tool` to let MCP clients load arbitrary supported public remote bundles at runtime. Configured remote bundles remain readable without that runtime-loading flag.
+Default with no subcommand also starts stdio MCP when a bundle root is configured.
 
-The stdio server uses `@modelcontextprotocol/server` v2. It serves the modern
-`2026-07-28` MCP revision and the SDK's compatibility path for 2025-era
-clients, including `2025-11-25`. The SDK owns protocol negotiation, framing,
-resource dispatch, tool dispatch, and advertised-schema validation.
+### hosted (Streamable HTTP + rollout)
 
-Expected failures from a known tool, such as a missing concept, a read-only
-bundle, a failed remote fetch, invalid arguments, or a proposal conflict, are
-returned as MCP tool results with `isError: true`. Calls to tools that are not
-enabled are rejected by SDK dispatch. Unexpected implementation errors are
-masked instead of exposing internal details.
+Authenticated enterprise profile: MCP at **`/mcp`**, rollout API at **`/v1/rollout/*`**.
 
-## MCP Registry Metadata
-
-`server.json` describes the fork's source package identity and stdio MCP entry as
-`io.github.doctormacky/okf-mcp`. The metadata stays synchronized with the
-source package and can be used for future registry publication, but this fork
-is currently installed from source. Clients should pass an absolute OKF root
-through `--root` and append the fixed `mcp` command.
-
-## Concept Identity And Extensions
-
-Concept IDs are their bundle-relative Markdown paths with `.md` removed. This extensionless path is the portable OKF identity. okf-mcp also exposes a workspace-scoped compatibility locator:
-
-```text
-okf://<bundle-id>/<extensionless-concept-id>
+```bash
+export OKF_READ_TOKEN="<read-token>"
+export OKF_ROLLOUT_TOKEN="<rollout-token>"
+okf hosted --root /path/to/catalog --host 127.0.0.1 --port 8765
+# → http://127.0.0.1:8765/mcp
 ```
 
-The former `.md` URI and a valid custom `id` remain compatibility lookup aliases. A bare Concept ID resolves only when unique across loaded bundles. For standalone aggregate catalogs, a URI-shaped portable path such as `okf://services/queue.md` also resolves when `services/queue` is globally unique and `services` is not a loaded bundle id. Exact canonical URIs always win; a known-bundle miss or ambiguous portable path stays unresolved. Reserved `index.md` and `log.md` resources retain their filenames because they are not concepts.
+Use **`okf-knowledge-publisher`** Skill to download → dry-run → submit snapshots. Other agents consume published knowledge through this MCP URL with `Authorization: Bearer $OKF_READ_TOKEN`.
 
-The `id`, `aliases`, and typed `relations` fields below are `okf-mcp` extensions. The standard v0.2 identity remains path-derived:
+Standalone unauthenticated HTTP (dev only):
 
-```markdown
----
-id: okf://app/routes/order-status
-type: API Route
-title: Order Status Route
-description: Serves order status state.
-aliases: [order-status]
-tags: [api, orders]
-relations:
-  - type: consumes
-    target: okf://data/tables/order_status
-  - type: configured_by
-    target: repo://src/routes/order-status.js
+```bash
+okf --root /path/to/bundle mcp --http --host 127.0.0.1 --port 8765
+```
+
+Prefer **`hosted`** for anything beyond localhost.
+
 ---
 
-# Order Status Route
-```
-
-New content should use normal relative or bundle-root Markdown paths for internal links and extension relation targets. Existing `okf://` targets remain supported; non-OKF schemes such as `repo://` remain opaque compatibility references.
-
-### Pinned Git Sources
-
-Code knowledge may live outside the code repository without recording a machine-specific path. Point a standard `sources` entry at a `Git Repository` concept and add the okf-mcp `git` extension below:
-
-```yaml
-sources:
-  - id: implementation
-    resource: /repositories/application.md
-    git:
-      revision: 0123456789abcdef0123456789abcdef01234567
-      path: src/application.js
-      lines: { from: 10, to: 30 }
-```
-
-Map the repository concept only in the local process configuration:
+## Common CLI checks
 
 ```bash
-okf --root /path/to/catalog \
-  --repo repositories/application=/work/application \
-  source architecture/application implementation
+okf --root /path/to/bundle validate
+okf --root /path/to/bundle search "token"
+okf --root /path/to/bundle concept business/datasets/my-dataset
+okf dbexplain inspect --include prod-main
+okf dbexplain validate --bundle-root /path/to/database-bundle
 ```
 
-`read_git_source` and the `source` CLI command read the pinned blob from the mapped Git object database. They never read the dirty worktree or fetch. Missing mappings and unpinned revisions remain visible but unavailable. Repository mappings may point to normal checkouts, bare repositories, or mounted paths; credentials and local paths stay outside the OKF bundle.
+---
 
-## Tools
+## Documentation
 
-- `list_bundles`
-- `list_concepts`
-- `get_concept`
-- `search_concepts`
-- `list_types`
-- `list_tags`
-- `list_relation_types`
-- `list_edge_kinds`
-- `get_provenance`
-- `inspect_attested_computation`
-- `read_bundle_asset`
-- `read_git_source`
-- `prepare_attested_computation`
-- `check_computation_receipt`
-- `check_v02_migration`
-- `load_remote_bundle`
-- `list_remote_bundles`
-- `okf_validate_concept`
-- `okf_suggest_concept_path`
-- `okf_propose_concept`
-- `okf_propose_update`
-- `okf_propose_attested_computation`
-- `okf_propose_v02_migration`
-- `okf_list_proposals`
-- `okf_get_proposal`
-- `okf_accept_proposal`
-- `okf_reject_proposal`
-- `okf_validate_changes`
-- `okf_apply_changes`
-- `get_graph`
-- `get_neighbors`
-- `get_subgraph`
-- `find_paths`
-- `graph_summary`
-- `validate_bundle`
-- `validate_project`
-- `export_graph`
+| Doc | Content |
+| --- | --- |
+| [docs/MCP_TOOLS.md](docs/MCP_TOOLS.md) / [docs/MCP_TOOLS_ZH.md](docs/MCP_TOOLS_ZH.md) | MCP tools — stdio vs HTTP parity, full catalog |
+| [docs/SKILLS.md](docs/SKILLS.md) / [docs/SKILLS_ZH.md](docs/SKILLS_ZH.md) | Built-in Skills — when & how |
+| [docs/OKF_CLI_SOURCE_INSTALL_UPDATE_ZH.md](docs/OKF_CLI_SOURCE_INSTALL_UPDATE_ZH.md) | Install, `npm link`, update, skills registration |
+| [docs/USER_GUIDE_ZH.md](docs/USER_GUIDE_ZH.md) | Full user manual (hosted, knowledge, MCP tools) |
+| [okf/bundles/okf-mcp/](okf/bundles/okf-mcp/) | Self-describing OKF product bundle |
 
-Most MCP tools are read-only over the current index. `load_remote_bundle` mutates only the server's in-memory index by fetching a public GitHub tree; it does not write files. Concept listing and search default to compact summaries; pass `detail: "full"` when navigation metadata, signals, ranking, or snippets are required. Relationship paths are deduplicated by node sequence even when parallel edge kinds connect the same concepts.
+---
 
-Every MCP tool includes a purpose-specific description, descriptions for its input parameters, and standard annotations covering read-only behavior, destructive behavior, idempotency, and external access.
-
-Tool arguments are validated against the advertised input schemas before
-execution. Unsupported fields, missing required values, incorrect primitive
-types, and out-of-range integers are rejected without coercion. Unknown or
-disabled tool names remain protocol-level invalid-parameter errors.
-
-Tool discovery and direct invocation use the same capability checks:
-
-| Mode | Normal proposals | Direct live write | Computation proposal | Runtime remote load |
-| --- | --- | --- | --- | --- |
-| default | disabled | disabled | disabled | disabled |
-| `--authoring` | enabled | disabled | disabled | disabled |
-| `--write --actor openai/gpt-5.6` | disabled | enabled | disabled | disabled |
-| `--authoring --allow-computation-authoring` | enabled | disabled | enabled | disabled |
-| `--allow-remote-tool` | disabled | disabled | disabled | enabled |
-
-An explicit local root or project workspace exposes concept validation, path suggestion, and proposal inspection helpers. Proposal mutation tools require `--authoring`. The direct live tools instead require `--write` plus a truthful actor using `human:<id>`, `process:<id>`, or `provider/model` syntax. In normal single-root mode, callers omit `bundle`; it is required only to select among multiple project roots. Remote roots remain read only.
-
-Generic concept tools cannot create or change an Attested Computation contract. `okf_propose_attested_computation` additionally requires `--allow-computation-authoring` and creates one coordinated review proposal for the concept plus an optional external computation file.
-
-## Live Concept Authoring
-
-Start the server with the direct-write capability only when the MCP client/user approval boundary is sufficient review:
+## Development
 
 ```bash
-okf --root /path/to/catalog --write --actor openai/gpt-5.6 mcp
+npm ci
+npm test
+npm run self:validate
 ```
 
-The agent sees one read-only batch validator and one destructive apply tool. It supplies structured concept fields rather than YAML; OKF serializes compatible Markdown frontmatter and stamps the configured `generated.by` plus one `generated.at` timestamp for the whole batch.
+---
 
-```json
-{
-  "name": "okf_apply_changes",
-  "arguments": {
-    "message": "docs(okf): document order creation",
-    "changes": [
-      {
-        "op": "create",
-        "type": "MCP Tool",
-        "title": "Create Order",
-        "body": "# Create Order\n\nCreates a validated order.",
-        "tags": ["orders", "mcp"],
-        "sources": ["/repositories/orders-service.md"],
-        "relations": [
-          { "type": "related_to", "target": "/workflows/order-creation.md" }
-        ]
-      }
-    ]
-  }
-}
-```
+## License
 
-Create paths are optional. The server first uses a strong dominant directory convention from existing same-type concepts within the requested prefix, then falls back to deterministic type/title slugs. `okf_suggest_concept_path` reports the strategy, evidence, path availability, and same-type/title matches so an available filename is not mistaken for a safe duplicate. Updates identify an existing `uri`; stale locators return bounded likely replacements, while scalar fields replace existing values and `tags`, `sources`, and `relations` use explicit `add`/`remove` patches. `metadata` carries extension frontmatter but cannot override identity, generation, collection, or computation fields. Paths and URIs are immutable during update: moving a concept changes its portable identity and remains a separate, intentionally unsupported operation.
-
-Every 1–100 item batch is validated as one future graph, so concepts created together can reference one another and same-type/title conflicts are detected across creates and updates. Call `okf_validate_changes` with the complete intended batch to receive a time-of-check preview without writing files. Validation and apply share the same planner; apply repeats every check under the writer queue because revisions and Git state can change after a preview. Compact receipts are the v0.8 default; pass `detail: "full"` for the v0.7 planning layout. Effects expose structured relations and keep server-managed generation provenance separate from substantive `changedFields`.
-
-The server writes nothing unless every candidate is valid, revision checks still match, and every target stays inside one writable bundle. Process-generated documents, generator output directories, hidden/control-plane paths such as `.git/**`, reserved files, and Attested Computation contracts are not live-write targets. Rollback checks revisions immediately before each restore and reports detected replacements as a partial `rollback_conflict`. That protection is best effort under the documented single-external-writer requirement; it is not a cross-process compare-and-swap guarantee.
-
-Add `--git-commit` as server policy to create one commit per successful batch. A detected Git worktree must be completely clean and have a configured identity before publication. Active Git filter attributes and `assume-unchanged`/`skip-worktree` index flags block the operation so validation cannot execute configured filters or overlook hidden user changes; replace-object resolution is disabled so hidden replacement history cannot alter the parent tree. The server builds an isolated index from the validated Markdown bytes, creates that exact tree with `commit-tree`, publishes it with a compare-and-swap ref update, synchronizes only the affected ordinary-index paths afterward, and never pushes. Concurrent unrelated staged entries cannot enter the commit. A determinate commit failure leaves matching valid files as working-tree-only; an ambiguous ref-update timeout is reported as unknown unless the resulting commit tree can be proven. Non-Git catalogs are written normally. Every response makes the repository root, commit state, index state, target-byte state, and persistence boundary explicit.
-
-## Authoring Concepts
-
-The reviewable proposal workflow remains available through MCP tools started with `--authoring` and through the HTTP API. Clients never need direct local file access.
-
-MCP proposal flow:
-
-```json
-{
-  "name": "okf_propose_concept",
-  "arguments": {
-    "path": "tools/create-order.md",
-    "frontmatter": {
-      "type": "MCP Tool",
-      "title": "Create Order",
-      "relations": [
-        {
-          "type": "related_to",
-          "target": "/workflows/order-creation.md"
-        }
-      ]
-    },
-    "body": "# Create Order\n\nCreates an order through the application MCP tool.",
-    "message": "Document create_order for agents."
-  }
-}
-```
-
-Then call `okf_accept_proposal` with the returned `proposal.id`.
-
-To correct an existing concept, read it with `get_concept`, then propose only the fields that need to change:
-
-```json
-{
-  "name": "okf_propose_update",
-  "arguments": {
-    "uri": "okf://app/tools/create-order",
-    "frontmatter": {
-      "title": "Create Order Tool",
-      "description": "Creates a validated order."
-    },
-    "removeFrontmatterKeys": ["deprecatedField"],
-    "message": "Correct outdated tool metadata."
-  }
-}
-```
-
-Omitted frontmatter fields and an omitted body are preserved. The concept URI cannot change through an update. Each update proposal records the source file revision, and acceptance checks it again immediately before replacing the file so detected concurrent changes are rejected.
-
-Safety rules:
-
-- concept paths must be safe, non-hidden relative `.md` paths inside a writable bundle
-- concept writes cannot traverse symbolic links under a writable bundle
-- missing subdirectories are created only when a proposal is accepted
-- `index.md` and `log.md` cannot be authored as concepts
-- duplicate paths and duplicate `okf://` IDs are rejected
-- updates cannot change concept identity and reject detected changes made after proposal creation
-- invalid IDs, invalid relation types, and broken internal OKF relations fail validation
-- external relation targets such as `repo://...` are allowed
-- direct batches are serialized within one process and validate the combined future graph before publication
-- independent processes still require external single-writer coordination
-
-## HTTP API
-
-There are two HTTP modes:
-
-- `hosted`: the recommended enterprise quick-rollout mode. It combines authenticated MCP Streamable HTTP and immutable snapshot rollout in one process.
-- `serve`: the legacy local proposal-oriented REST API described below. It is not an MCP transport and does not provide the immutable rollout workflow.
-
-Start the HTTP server:
-
-```bash
-OKF_WRITE_TOKEN=change-me okf --root /path/to/catalog serve --host 127.0.0.1 --port 8765
-```
-
-Read/validation endpoints:
-
-- `GET /health`
-- `GET /v1/bundles`
-- `POST /v1/concepts/validate`
-- `POST /v1/concepts/suggest-path`
-
-Proposal inspection and mutation endpoints require `Authorization: Bearer <OKF_WRITE_TOKEN>` because pending records can contain complete candidate Markdown and computation code:
-
-- `GET /v1/proposals`
-- `GET /v1/proposals/:id`
-- `POST /v1/proposals`
-- `POST /v1/proposals/update`
-- `POST /v1/proposals/:id/accept`
-- `POST /v1/proposals/:id/reject`
-
-The default file-backed proposal store writes proposal JSON under `.okf-proposals` in the selected root or project. Accepted proposals write Markdown concepts into the selected local root.
-
-`POST /v1/concepts/validate` and `POST /v1/concepts/suggest-path` do not persist anything. `POST /v1/proposals` persists only a proposal record. Only `POST /v1/proposals/:id/accept` writes a concept Markdown file.
-
-## Remote Bundles
-
-Remote bundles let one workspace consume concepts published by another repository without vendoring them. For a host-agnostic setup, clone or mount an OKF repository from any Git host and pass its directory through `--root`; transport and synchronization remain outside the OKF specification.
-
-Supported source:
-
-- Public GitHub repository tree URLs: `https://github.com/<owner>/<repo>/tree/<ref>/<path>`
-
-Remote loading:
-
-- inventories the tree, fetches selected `.md` documents first, then fetches only explicitly referenced bundle-local assets
-- records resolved revision metadata, SHA256 digests, document/asset byte counts, and unresolved references
-- inventories remote paths but never downloads the contents of unreferenced `.sql`, `.py`, or binary files
-- keeps each remote bundle under its configured bundle id
-- supports `include` and `exclude` filters
-- resolves Markdown links inside the remote bundle path
-- enforces file count and byte limits
-- does not execute code from the remote repository
-
-CLI examples:
-
-```bash
-okf --remote-bundle shared=https://github.com/example/okf-atlas/tree/main/bundles/shared --inspect
-okf --project okf.project.yaml --remote-bundle vendor=https://github.com/example/vendor-okf/tree/main/bundles/catalog validate
-```
-
-MCP runtime loading:
-
-Start the MCP server with `--allow-remote-tool` before calling `load_remote_bundle`.
-
-```json
-{
-  "name": "load_remote_bundle",
-  "arguments": {
-    "id": "shared",
-    "url": "https://github.com/example/okf-atlas/tree/main/bundles/shared",
-    "include": ["public/**"]
-  }
-}
-```
-
-Use `list_remote_bundles` to inspect what was loaded.
-
-## Structured Search
-
-`search_concepts` accepts:
-
-- `query`
-- `bundle`
-- `types`
-- `tagsAny`
-- `tagsAll`
-- `pathPrefix`
-- `frontmatter`
-- `linkedTo`
-- `linkedFrom`
-- `relationType`
-- `orphanOnly`
-- `statuses`
-- `trustTiers`
-- `freshness` and deterministic `asOf`
-- `hasSources`
-- `runtime` and `attestationReady`
-- `generatedBy` and `verifiedBy`
-- `detail` (`compact` by default, or `full`)
-- `limit`
-- `offset`
-
-`list_concepts` also accepts a text `query` and applies it together with its
-listing filters. Text search tokenizes case-insensitively and requires every
-query term, regardless of order. BM25+ ranks title, type, tags, aliases,
-description, path, and body matches; frontmatter remains available through
-exact structured filters but is not copied into the text index. Scores are
-relative within a result set and are not a stable cross-version scale. Compact results contain only `uri`, `title`, `type`, and `description`; title, type, and description are bounded, while full results remain lossless.
-
-Queries are bounded to 512 characters and 16 terms. Prefix expansion, fuzzy
-matching, stemming, and stop-word removal are intentionally disabled so code
-identifiers and domain terminology remain literal. Punctuation-only queries
-return no matches. Tags and types are matched case-insensitively. Arbitrary
-frontmatter filters support exact scalar matching and array-contains
-matching. `relationType` selects concepts with an outgoing relation of that
-type.
-
-The SDK regression suite also budgets a neutral four-step research path from actual serialized MCP text. It uses UTF-8 bytes divided by four as a deterministic estimate, not an exact model tokenizer or billing count, and guards both an absolute compact budget and a compact/full ratio.
-
-Example:
-
-```json
-{
-  "query": "catalog",
-  "types": ["API Route"],
-  "tagsAll": ["api", "orders"],
-  "limit": 10
-}
-```
-
-For local relevance and performance checks, run the non-packaged development
-benchmark with a bundle root and an optional JSON array of `{ "query": "...",
-"expected": "path/or/concept-id" }` judgments:
-
-```bash
-node --expose-gc scripts/search-benchmark.js \
-  --root /path/to/okf \
-  --qrels /path/to/qrels.json
-```
-
-It reports OKF and search-index build time, retained heap/RSS, p50/p95 query
-latency, Recall@10, MRR@10, and representative rankings. Search indexes are
-process-local and keyed to the parsed OKF index, so remote loads and accepted
-proposals receive a fresh index automatically.
-
-## Graph Behavior
-
-As an okf-mcp graph projection, Markdown links become `markdown_link` edges, extension `relations` become typed `relation` edges, and standard v0.2 path-valued fields become `resource`, `source`, `computation`, `executor`, and `attester` edges. Internal concept references resolve to canonical nodes; explicitly referenced non-Markdown files resolve to okf-mcp `okf-asset://` nodes; URLs and scope descriptors remain unfetched external or opaque leaves.
-
-For navigation convenience, okf-mcp resolves links to a nested bundle directory to that directory's reserved
-`index.md` when there is no exact document target. This applies to local and
-remote bundles and to candidate validation during proposal authoring.
-
-Graph tools return bounded JSON:
-
-```json
-{
-  "nodes": [
-    {
-      "id": "okf://app/routes/order-status",
-      "bundle": "app",
-      "path": "routes/order-status.md",
-      "type": "API Route",
-      "title": "Order Status Route",
-      "tags": ["api", "orders"],
-      "description": "Serves order status state."
-    }
-  ],
-  "edges": [],
-  "warnings": []
-}
-```
-
-Use `graph_summary` first for counts by lifecycle, trust, freshness, runtime, readiness, and edge kind. Graph tools accept `edgeKinds`; pass `includeExternal: true` or `includeAssets: true` when those leaf nodes are needed.
-
-Default relation types:
-
-- `depends_on`
-- `produces`
-- `consumes`
-- `persists_to`
-- `materializes_to`
-- `configured_by`
-- `checked_by`
-- `owned_by`
-- `supersedes`
-- `related_to`
-
-Add project-specific relation types with `relationTypes` in `okf.project.yaml`.
-
-Project paths in `bundles` and `plugins` must be relative paths that stay inside the directory containing `okf.project.yaml`. Absolute paths and `../` escapes are rejected.
-
-Bundle `include` and `exclude` filters use simple path patterns:
-
-- exact file paths, such as `services/order-status.md`
-- directory prefixes, such as `archive/`
-- `*` for one path segment
-- `**` for any nested path
-
-## Validation
-
-`validate`, `validate_bundle`, and `validate_project` return separate `conformant` and `validForProject` fields plus structured diagnostics. `valid` remains a compatibility alias for `validForProject`.
-
-OKF conformance covers, when the corresponding files are present:
-
-- parseable YAML mapping frontmatter on non-reserved concept documents
-- a non-empty `type`
-- the reserved structure of `index.md` and `log.md`
-
-Unknown frontmatter keys and unknown concept type values do not fail conformance. The YAML parser supports nested mappings, arrays, block scalars, and other structures accepted by its safe YAML core schema; duplicate keys and unsupported custom tags are rejected.
-
-Missing `index.md` files and broken cross-links do not fail OKF conformance. `strictLinks` affects only okf-mcp workspace validity (`validForProject`), not the normative `conformant` result.
-
-Project validity additionally reports:
-
-- duplicate OKF URIs
-- broken internal Markdown links as advisories by default; set project `strictLinks: true` or pass `--strict-links` to make them project-invalid
-- invalid relation types
-- missing relation targets
-- broken `okf://` relation targets
-- duplicate bundle IDs
-- invalid or escaping project paths
-- links that resolve outside the configured bundle root
-- missing bundle roots
-
-The server keeps serving valid concepts from partial bundles.
-
-Optional v0.2 families are normalized into `signals`. Malformed provenance, generation, verification, lifecycle, freshness, or computation metadata produces an advisory and never creates a fourth trust tier. Verification fails closed to `unverified`; absent status defaults to `stable`; freshness is evaluated at an explicit `asOf` date when supplied. Authoring is stricter than consumption and rejects malformed known v0.2 fields.
-
-## Attested Computation
-
-`inspect_attested_computation` reports the runtime, declared parameters, sanctioned inline or file computation digest, executor receipt fields, attester reference, indexed assets, readiness, and diagnostics. `prepare_attested_computation` checks declared parameter names and returns digests without returning values. `check_computation_receipt` checks field presence without returning values, persisting the receipt, or claiming attestation.
-
-okf-mcp has no execution or attestation adapter. It never runs the computation, executor resource, or attester resource, and it never fetches an external contract URI on demand.
-
-CLI parity is available through `computation inspect|prepare|check-receipt`, `provenance`, `edge-kinds`, and `asset`. Supply sensitive values with `--parameters-file <path|->` or `--receipt-file <path|->`; raw parameter and receipt JSON is intentionally rejected in process arguments. `-` reads one JSON object from stdin. Asset reads accept `--max-content-bytes` up to the indexed 1 MiB limit.
-
-## Migrating Existing Catalogs To v0.2
-
-The v0.2 specification keeps v0.1 bundles consumable through two fallbacks: legacy `timestamp` when `generated` is absent, and a legacy body `# Citations` list when `sources` is absent. okf-mcp applies those fallbacks during reads and offers an optional review-only conversion workflow.
-
-For one root, inspect migration readiness and preview the proposed native fields without writing anything:
-
-```bash
-okf --root /path/to/catalog migrate check
-okf --root /path/to/catalog migrate preview \
-  '{"metrics/revenue.md":{"by":"human:owner","confirmed":true}}'
-```
-
-In optional multi-root project mode, supply the root id before the actor-mapping JSON.
-
-Migration is deliberately conservative:
-
-- native `generated` and `sources` fields always win
-- a valid `timestamp` is copied into a new `generated: { by, at }` mapping only after a truthful `by` actor is explicitly confirmed
-- `# Citations` becomes `sources` only from one top-level H1 section containing at least one safely parseable list entry and no unparsed prose, nested sections, ambiguous entries, or escaping paths
-- legacy fields and citation prose are retained for compatibility
-- concepts marked by `--generated-path`, a document flag, or `generated_file`/`generatedFile` frontmatter must be changed through their generator; remote roots are report-only
-- identity collisions, invalid documents, unsafe references, and unresolved assets block the version declaration
-
-`okf_propose_v02_migration` requires local-root authoring. It creates a review manifest, one proposal per affected file, and a gated root `okf_version: "0.2"` proposal. Nothing is accepted automatically; the root proposal can be accepted only after every child is accepted and the complete catalog validates.
-
-## Generator Plugins
-
-Generator plugins are configured in `okf.project.yaml` and run with `generate`.
-
-Built-in plugins:
-
-- `filesystem`: creates one concept per matching source file. Defaults to Markdown files.
-- `json-spec`: creates one concept per JSON file and can emit `persists_to` relations when a destination table is present.
-
-Generated output is regular Markdown/YAML OKF and is validated by the same indexer as hand-authored concepts.
-
-## Limitations
-
-- MCP supports stdio and Streamable HTTP. Use `hosted` for the authenticated combined enterprise profile; standalone `mcp --http` is a lower-level transport mode and does not add hosted authentication or rollout endpoints.
-- MCP protocol compatibility follows the pinned official SDK v2 dependency.
-- There is no file watcher. Restart the server after external file changes. Concepts accepted through MCP authoring refresh the MCP server index immediately.
-- Hosted mode is a single-process, single-writer quick-rollout service, not a distributed multi-tenant control plane. Do not run multiple writers against the same generation store.
-- The configured bundle root is a best-effort compatibility mirror in hosted mode. Immutable generations are the serving source.
-- OKF v0.2 computation support is static inspection and preflight only; no computation or attester is executed.
+MIT — see [LICENSE](LICENSE). Upstream [mfdaves/okf-mcp](https://github.com/mfdaves/okf-mcp) contributors remain credited.

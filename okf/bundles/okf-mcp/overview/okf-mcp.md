@@ -13,13 +13,15 @@ relations:
     target: okf://okf-mcp/interfaces/http-authoring-api
   - type: produces
     target: okf://okf-mcp/distribution/reference-bundle
+  - type: produces
+    target: okf://okf-mcp/workflows/dbexplain-bundle-sync
   - type: configured_by
     target: repo://package.json
 ---
 
 # okf-mcp
 
-`okf-mcp` turns one OKF v0.2 root and its explicitly referenced inert assets into a searchable in-memory knowledge graph. It provides a CLI, SDK-backed stdio and Streamable HTTP MCP server, pinned Git-source reads, optional workspace federation, generator plugins, remote GitHub bundles, a legacy HTTP authoring API, and an authenticated immutable-snapshot rollout profile.
+`okf-mcp` turns one OKF v0.2 root and its explicitly referenced inert assets into a searchable in-memory knowledge graph. It provides a CLI, SDK-backed stdio and Streamable HTTP MCP server, pinned Git-source reads, optional workspace federation, generator plugins, deterministic dbexplain database Bundle synchronization, remote GitHub bundles, a legacy HTTP authoring API, and an authenticated immutable-snapshot rollout profile.
 
 The runtime uses `js-yaml`, CommonMark, and a process-local MiniSearch BM25+ text index. It has no database, embedding service, computation executor, attester runtime, or build step. `--root` is the normal single-catalog interface and performs no network calls. The optional project manifest federates multiple roots and generator configuration; it is an okf-mcp extension rather than part of OKF v0.2.
 

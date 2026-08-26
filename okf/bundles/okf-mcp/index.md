@@ -20,5 +20,6 @@ This bundle is the canonical machine-readable reference for the `okf-mcp` runtim
 - [Concept Authoring](workflows/concept-authoring.md)
 - [Concept Update](workflows/concept-update.md)
 - [OKF v0.2 Migration](workflows/v02-migration.md)
+- [dbexplain Database Bundle Synchronization](workflows/dbexplain-bundle-sync.md)
 - [Authoring Safety](policies/authoring-safety.md)
 - [Published Reference Bundle](distribution/reference-bundle.md)

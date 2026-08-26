@@ -285,9 +285,16 @@ async function main() {
     assert.equal(packedPaths.has("okf.project.yaml"), true);
     assert.equal(packedPaths.has("okf/bundles/okf-mcp/index.md"), true);
     assert.equal(packedPaths.has("server.json"), true);
+    assert.equal(packedPaths.has("src/dbexplain.js"), true);
     assert.equal(packedPaths.has(".agents/skills/okf-v02-migration/SKILL.md"), true);
     assert.equal(packedPaths.has(".agents/skills/okf-v02-migration/agents/openai.yaml"), true);
     assert.equal(packedPaths.has(".agents/skills/okf-v02-migration/references/field-mapping.md"), true);
+    assert.equal(packedPaths.has(".agents/skills/okf-dbexplain/SKILL.md"), true);
+    assert.equal(packedPaths.has(".agents/skills/okf-dbexplain/agents/openai.yaml"), true);
+    assert.equal(packedPaths.has(".agents/skills/okf-dbexplain/references/sync.md"), true);
+    assert.equal(packedPaths.has(".agents/skills/okf-dbexplain/references/semantic-overlay.md"), true);
+    assert.equal(packedPaths.has(".agents/skills/okf-bundle-business/SKILL.md"), true);
+    assert.equal(packedPaths.has(".agents/skills/okf-bundle-business/agents/openai.yaml"), true);
     [
       ".github/",
       ".okf-proposals/",
@@ -325,6 +332,7 @@ async function main() {
     assert.equal(installedServerMetadata.packages[0].version, packageMetadata.version);
     assert.equal(run(okf, ["--version"]).stdout.trim(), packageMetadata.version);
     assert.equal(run(okfMcp, ["--version"]).stdout.trim(), packageMetadata.version);
+    assert.match(run(okf, ["dbexplain", "--help"]).stdout, /dbexplain sync/);
 
     const validation = JSON.parse(run(okf, ["--root", installedRoot, "validate"]).stdout);
     assert.equal(validation.conformant, true);
@@ -339,7 +347,7 @@ async function main() {
     process.stdout.write(JSON.stringify({
       package: `${packageMetadata.name}@${packageMetadata.version}`,
       entries: packed.entryCount,
-      concepts: 14,
+      concepts: 15,
       binaries: ["okf", "okf-mcp"],
       stdio: "passed",
       hosted,

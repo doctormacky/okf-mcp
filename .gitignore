@@ -7,6 +7,10 @@ coverage/
 !.agents/skills/okf-v02-migration/**
 !.agents/skills/okf-knowledge-publisher/
 !.agents/skills/okf-knowledge-publisher/**
+!.agents/skills/okf-dbexplain/
+!.agents/skills/okf-dbexplain/**
+!.agents/skills/okf-bundle-business/
+!.agents/skills/okf-bundle-business/**
 .okf-cache/
 .okf-proposals/
 *.tgz
