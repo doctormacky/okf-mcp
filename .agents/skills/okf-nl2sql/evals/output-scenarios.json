@@ -1,0 +1,53 @@
+[
+  {
+    "name":"opaque physical names resolved by comments",
+    "query":"按地区统计上个月已完成维修单数量",
+    "fixture":"physical-only Bundle where t_01 is commented 维修工单, c_17 is 地区, c_22 is 完成时间, and c_31 comment defines status codes",
+    "expected_behavior":[
+      "Uses atomic searches and table/column comments to ground the business slots",
+      "Does not ask the user for t_01 or c_17",
+      "Executes a bounded aggregate with the exact binding and explicit status/time filters",
+      "Returns only the requested business result and necessary rows, without SQL, physical identifiers, Concept evidence, or execution metadata",
+      "Renders the grouped rows as a Markdown table with business-facing labels and no outer code fence"
+    ]
+  },
+  {
+    "name":"human business meaning outranks executable saved SQL",
+    "query":"本季度净收入是多少",
+    "fixture":"human-reviewed Metric excludes refunds while a machine-confirmed Saved Query calculates gross paid amount",
+    "expected_behavior":[
+      "Uses the human-reviewed net-income definition",
+      "Treats the Saved Query only as executable evidence if its business definition differs",
+      "Does not claim process:dbexplain proves business review"
+    ]
+  },
+  {
+    "name":"reverse one-to-many fanout",
+    "query":"每位客户的订单金额和客服互动次数",
+    "fixture":"orders and interactions are two fact tables related to customer",
+    "expected_behavior":[
+      "Fixes customer as the requested output grain",
+      "Pre-aggregates orders and interactions independently before joining",
+      "Does not directly join both fact tables and sum duplicated amounts"
+    ]
+  },
+  {
+    "name":"optional inferred dimension with low coverage",
+    "query":"按站点统计设备事件，并保留未分配站点的设备",
+    "fixture":"one confidence-85 same-label inferred device-to-site relation, unique target, no fanout, 63 percent matched",
+    "expected_behavior":[
+      "Runs uniqueness, match, and grain aggregate validation",
+      "Uses LEFT JOIN and preserves unmatched events in an unknown group",
+      "Returns the requested result with 63 percent match coverage as a material limitation, without inferred-relation or validation internals"
+    ]
+  },
+  {
+    "name":"business ambiguity blocks execution",
+    "query":"统计本月活跃客户",
+    "fixture":"knowledge contains login-active and purchase-active definitions with equal relevance",
+    "expected_behavior":[
+      "Asks the user to choose between the business definitions without exposing physical fields",
+      "Does not execute SQL before the definition is resolved"
+    ]
+  }
+]

@@ -1,0 +1,7 @@
+[
+  {
+    "split": "train",
+    "should_trigger": true,
+    "query": "请帮我从数据库里查询 XXXX"
+  }
+]

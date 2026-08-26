@@ -1,0 +1,6 @@
+interface:
+  display_name: "Query Data With OKF Knowledge"
+  short_description: "Answer business questions with OKF knowledge and dbexplain"
+  default_prompt: "Use $okf-nl2sql to answer this business data question with verified results grounded in available OKF knowledge, execute read-only SQL internally without exposing it or execution details, and format the result as rendered Markdown with a table for multiple rows."
+policy:
+  allow_implicit_invocation: true
