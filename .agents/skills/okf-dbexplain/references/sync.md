@@ -1,7 +1,7 @@
 # Synchronize The Database Bundle (Facts Only)
 
-Use for build or refresh of the **physical layer**. Business overlays belong to
-`okf-bundle-business`.
+Use for build or refresh of the **physical layer**. Human-owned Business overlays
+are outside this workflow.
 
 ## Inspect
 
@@ -57,7 +57,7 @@ Restart okf-mcp after sync to re-index.
 
 ## overlay-draft / overlay-index
 
-**Not part of this skill.** `$okf-bundle-business` adds or updates overlays.
+**Not part of this skill.** Overlay authoring is an independent capability.
 
 - `okf dbexplain overlay-draft` creates **missing** datasets/relationships only
   (never overwrites existing overlay Concepts) and refreshes overlay `index.md`.

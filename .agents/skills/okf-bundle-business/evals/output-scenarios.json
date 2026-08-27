@@ -1,0 +1,76 @@
+[
+  {
+    "name":"alias enrichment needs no SQL",
+    "request":"Add buyer and purchaser aliases to the existing Customer Dataset",
+    "expected_behavior":[
+      "Inventories Business and finds the Dataset by physical binding",
+      "Proposes an in-place update rather than a duplicate",
+      "Does not require an SQL example for an alias-only change",
+      "Waits for approval before writing"
+    ]
+  },
+  {
+    "name":"comment-backed enumeration",
+    "request":"Expose the order state codes documented in the physical column comment",
+    "expected_behavior":[
+      "Preserves exact comment-defined codes and labels",
+      "Projects the enum into semantic structure and searchable body",
+      "Keeps the claim draft unless human verification already exists"
+    ]
+  },
+  {
+    "name":"ambiguous time role",
+    "request":"Document the business day for device events",
+    "expected_behavior":[
+      "Finds both occurred_at and received_at comments",
+      "Asks which business time meaning is intended",
+      "Does not ask the user to choose a physical column or write before clarification"
+    ]
+  },
+  {
+    "name":"metric update in place",
+    "request":"Change resolution time to closed time minus opened time",
+    "expected_behavior":[
+      "Finds and updates the existing Metric with the same meaning and base grain",
+      "Executes the approved SQL-backed expression before machine verification",
+      "Does not turn successful execution into human-reviewed status"
+    ]
+  },
+  {
+    "name":"missing physical facts",
+    "request":"Add an assignment-group relationship whose target table is absent from the Bundle",
+    "expected_behavior":[
+      "Reports the missing query-ready physical target",
+      "Does not invent a table, relationship, or dependency on another Skill"
+    ]
+  },
+  {
+    "name":"fixed accumulated SQL",
+    "request":"Preserve this established month-end reconciliation SQL; it has no parameters",
+    "expected_behavior":[
+      "Matches existing Saved Queries by purpose, grain, fixed population, and SQL logic before creating one",
+      "Documents Parameters: none and keeps the executable SQL unchanged",
+      "Executes the exact approved statement before recording existing dbexplain verification",
+      "Does not derive Metrics or Relationships without an explicit request"
+    ]
+  },
+  {
+    "name":"parameterized accumulated SQL",
+    "request":"Preserve this executable order-report example; store ID, date range, and state list vary",
+    "expected_behavior":[
+      "Treats only the user-identified literals as parameters and preserves fixed business predicates",
+      "Documents each parameter's meaning, SQL occurrence, proven type and shape, example input, and literal rendering",
+      "Stores one executable SQL example rather than an unexecutable placeholder template",
+      "States that examples are not defaults and missing current values require clarification"
+    ]
+  },
+  {
+    "name":"ambiguous or sensitive parameter evidence",
+    "request":"Turn this placeholder SQL into reusable knowledge even though the customer key type is unknown and the only example contains a token",
+    "expected_behavior":[
+      "Requests a filled executable example and confirmation of the unresolved parameter type",
+      "Requires a safe executable replacement for the sensitive literal",
+      "Does not write or execute before the revised proposal is approved"
+    ]
+  }
+]

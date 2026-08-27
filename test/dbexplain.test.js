@@ -334,8 +334,16 @@ test("dbexplain sync applies reviewed structure, refreshes observations, and dep
   const audit = initialModel.tables.find((table) => table.name === "audit_events");
   const declared = initialModel.declaredRelationships[0];
   const inferred = initialModel.inferredRelationships[0];
-  assert.equal(readConcept(bundleRoot, users.path).frontmatter.generated.at, "2026-08-25T09:00:00Z");
-  assert.equal(readConcept(bundleRoot, inferred.path).frontmatter.status, "draft");
+  const usersConcept = readConcept(bundleRoot, users.path);
+  const inferredConcept = readConcept(bundleRoot, inferred.path);
+  assert.equal(usersConcept.frontmatter.generated.at, "2026-08-25T09:00:00Z");
+  assert.equal(usersConcept.frontmatter.description, "Application users");
+  assert.match(usersConcept.body, /Row identity: `id`/);
+  assert.match(usersConcept.body, /`id`.*PK/);
+  assert.equal(inferredConcept.frontmatter.status, "draft");
+  assert.equal(inferredConcept.frontmatter.dbexplain.evidence, "inferred_ref");
+  assert.equal(inferredConcept.frontmatter.dbexplain.confidence, 85);
+  assert.equal(inferredConcept.frontmatter.dbexplain.join_binding.executable, false);
   assert.equal(users.path, "tables/prod-main/app/users.md");
   assert.equal(orders.path, "tables/prod-main/app/orders.md");
   assert.equal(declared.path, "relationships/declared/orders__users.md");
@@ -351,6 +359,8 @@ test("dbexplain sync applies reviewed structure, refreshes observations, and dep
   assert.equal(ordersConcept.frontmatter.dbexplain.sql_binding.dialect, "postgres");
   assert.equal(ordersConcept.frontmatter.dbexplain.sql_binding.source_sql, '"public"."orders"');
   assert.equal(ordersConcept.frontmatter.dbexplain.sql_binding.columns.find((entry) => entry.name === "user_id").sql_reference_template, '{{alias}}."user_id"');
+  assert.equal(ordersConcept.frontmatter.dbexplain.sql_binding.columns.find((entry) => entry.name === "status").comment, "状态[1:运行中,2:成功,3:失败]");
+  assert.match(ordersConcept.body, /状态\[1:运行中,2:成功,3:失败\]/);
   const declaredConcept = readConcept(bundleRoot, declared.path);
   assert.equal(declaredConcept.frontmatter.dbexplain.join_binding.cardinality, "many-to-one");
   assert.equal(declaredConcept.frontmatter.dbexplain.join_binding.executable, true);
@@ -434,12 +444,23 @@ test("generated SQL and join bindings are returned intact through OKF MCP", asyn
     types: ["Database Table"],
   });
   assert.equal(search.payload.results.some((entry) => entry.uri === "okf://database/tables/prod-main/app/orders"), true);
+  const tableCommentSearch = await callJson(client, "search_concepts", {
+    query: "Application users",
+    types: ["Database Table"],
+  });
+  assert.equal(tableCommentSearch.payload.results.some((entry) => entry.uri === "okf://database/tables/prod-main/app/users"), true);
+  const columnCommentSearch = await callJson(client, "search_concepts", {
+    query: "状态",
+    types: ["Database Table"],
+  });
+  assert.equal(columnCommentSearch.payload.results.some((entry) => entry.uri === "okf://database/tables/prod-main/app/orders"), true);
 
   const table = await callJson(client, "get_concept", {
     uri: "okf://database/tables/prod-main/app/orders",
   });
   assert.equal(table.payload.frontmatter.dbexplain.sql_binding.source_sql, '"public"."orders"');
   assert.equal(table.payload.frontmatter.dbexplain.sql_binding.columns.find((entry) => entry.name === "user_id").sql_identifier, '"user_id"');
+  assert.equal(table.payload.frontmatter.dbexplain.sql_binding.columns.find((entry) => entry.name === "status").comment, "状态[1:运行中,2:成功,3:失败]");
 
   const relationship = await callJson(client, "get_concept", {
     uri: "okf://database/relationships/declared/orders__users",

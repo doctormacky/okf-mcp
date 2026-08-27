@@ -125,7 +125,7 @@ For database Bundle NL2SQL, the default **read-only** profile is usually enough:
 
 ## Database NL2SQL: tools agents use most
 
-After `$okf-dbexplain` sync and `$okf-bundle-business` overlays:
+When a loaded database Bundle contains physical bindings and may contain Business semantics:
 
 ```text
 list_bundles          → confirm bundle is loaded

@@ -38,15 +38,15 @@ command -v dbexplain && dbexplain --version
 
 ---
 
-## 快速开始（数据库 Bundle → 问数）
+## 快速开始（数据库知识与问数）
 
-SmartAdmin / 太易 等场景的典型路径：
+CLI 和各 Skill 是独立能力，按任务选择安装，不构成固定链：
 
 ```text
-1. 安装 okf-mcp + dbexplain
-2. $okf-dbexplain        → 把物理事实 sync 进 Bundle 目录
-3. $okf-bundle-business  → 多轮确认后补 business 语义
-4. okf-mcp 挂载 Bundle → 其它 Agent 检索并拼 SQL
+okf CLI / MCP        → 校验、索引和提供知识
+okf-dbexplain        → 生成或刷新物理事实
+okf-bundle-business  → 增补或纠正 Business 知识
+okf-nl2sql           → 查询真实数据并返回可追溯结果
 ```
 
 ### 1. 安装 okf-mcp
@@ -88,9 +88,8 @@ okf dbexplain validate --bundle-root /data/okf/my-database
 ```text
 $okf-bundle-business
 Bundle: /data/okf/my-database
-label: prod-main
-业务：统计 XXXX 用户在 2026年5月的 token 消耗总量
-请先给逻辑和 SQL 例子，我确认后再写入
+需求：给客户数据集增加 buyer 别名，并投影订单 state 字段注释中的显式枚举。
+请先盘点已有 Business 并提案，我确认后再写入。
 ```
 
 写入后刷新 overlay 索引（**不要手改 index.md**）：
@@ -115,12 +114,13 @@ Skill 说明：[docs/SKILLS_ZH.md](docs/SKILLS_ZH.md)
 | Skill | 什么时候用 | 示例说法 |
 | --- | --- | --- |
 | **[okf-dbexplain](.agents/skills/okf-dbexplain/)** | 首次或刷新 **物理事实** Bundle | `$okf-dbexplain 把 prod-main sync 到 /data/okf/my-db` |
-| **[okf-bundle-business](.agents/skills/okf-bundle-business/)** | 在已有 Bundle 上 **补/改 business**（问数） | `$okf-bundle-business 更新 test-bundle 的 token 统计 business` |
+| **[okf-bundle-business](.agents/skills/okf-bundle-business/)** | 在 query-ready Bundle 上增补或纠正 Business 知识 | `$okf-bundle-business 给客户数据集增加 buyer 别名` |
+| **[okf-nl2sql](.agents/skills/okf-nl2sql/)** | 基于 MCP 知识执行只读 SQL 并返回真实数据 | `$okf-nl2sql 上个月各门店退款后的实际销售额是多少` |
 | **[okf-knowledge-publisher](.agents/skills/okf-knowledge-publisher/)** | 向 **中心知识库** 发布/更新（hosted MCP） | `$okf-knowledge-publisher 发布 workspace 到服务器` |
 
 另含 **[okf-v02-migration](.agents/skills/okf-v02-migration/)**：仅在做 v0.1 → v0.2 迁移时使用。
 
-**分工：** 物理层（`okf-dbexplain`）→ 语义层（`okf-bundle-business`）→ MCP 检索。不要让一个 Skill 替另一个猜业务。
+各 Skill 可单独安装或任意组合，不假设彼此存在。组合方式由用户或 Agent Host 决定。
 
 完整说明：[docs/SKILLS_ZH.md](docs/SKILLS_ZH.md) · [docs/SKILLS.md](docs/SKILLS.md)
 
@@ -149,7 +149,9 @@ stdio 与 Streamable HTTP 在**相同启动参数**下暴露**相同工具**。�
 
 **Resources：** `okf-documents` 模板 — 通过 `okf://` URI 读取任意已索引 Markdown 概念。
 
-**问数流程：** `search_concepts` → `get_concept` → `get_neighbors` → 结合 `queries/` 中已保存 SQL 拼语句。
+**问数流程：** `$okf-nl2sql` 调用 `search_concepts` → `get_concept` →
+`get_neighbors`，结合 business、物理 binding 与 Saved Query 组装 SQL；知识不足时再用
+dbexplain 做受限实时探测。
 
 可选写/authoring 工具（`okf_propose_*`、`okf_apply_changes`、`load_remote_bundle`）仅在**本地 stdio/HTTP** 加额外 flag 时可用；**hosted 不提供**。知识发布走 `okf knowledge` CLI，不走 MCP 写工具。
 
@@ -211,7 +213,7 @@ okf --root /path/to/bundle mcp --http --host 127.0.0.1 --port 8765
 
 ```bash
 okf --root /path/to/bundle validate
-okf --root /path/to/bundle search "token"
+okf --root /path/to/bundle search "order state"
 okf --root /path/to/bundle concept business/datasets/my-dataset
 okf dbexplain inspect --include prod-main
 ```

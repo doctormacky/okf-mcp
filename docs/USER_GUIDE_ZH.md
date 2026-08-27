@@ -599,7 +599,7 @@ apply 会重新采集。只有运行指标变化时 Observation 使用最新值�
 - 物理目录按 label/database 生成分层 reserved indexes；overlay 只生成空索引，模板留在 Skills，避免污染 MCP 搜索。
 - `semantic.profile: dbexplain-okf-v1` 是原样保存的扩展；同一知识同时投影到现有 `relations` 和 Markdown body，通用 okf-mcp 无需理解数据库字段。
 - Agent 生成的 Saved Query 必须先经 `dbexplain execute` 成功执行并由用户确认，再记录 SQL digest verification；结果行不进入 Bundle。
-- 内置 `okf-dbexplain` Skill 只同步物理事实层；`okf-bundle-business` Skill 在用户明确业务范围后补充 business 覆盖层。
+- 物理事实同步、Business 知识丰富和真实问数是可独立安装的能力；任何 Skill 都不假设其它 Skill 已安装。
 
 ## 22. 常见错误
 

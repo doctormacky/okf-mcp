@@ -1,157 +1,106 @@
 ---
 name: okf-bundle-business
-description: >-
-  Authors and updates business overlays on an existing okf-dbexplain Bundle for
-  NL2SQL: datasets, relationships, enums, saved queries, and overlay index.md.
-  Inventories existing business first and updates matching Concepts in place, or
-  creates missing ones after the user approves a logic proposal with example SQL.
-  Use when the user asks to add or update Bundle business, 语义层, 问数 semantics,
-  overlay-draft, saved queries, or business indexes, or mentions token 消耗 /
-  统计 with an existing database Bundle. Do not use to sync physical schema
-  (okf-dbexplain) or to guess joins, enums, or SQL.
+description: Use this skill when the user wants to add or correct Business knowledge in an existing query-ready OKF database Bundle, including datasets, terms, enums, relationships, metrics, policies, or business-maintained executable SQL preserved as Saved Queries for later NL2SQL grounding. Inventory existing Concepts, propose reviewed changes, and update matching knowledge in place. Do not use for live database answers, physical schema synchronization, or publishing.
 ---
 
-# Author OKF Bundle Business Overlays
+# Enrich OKF Business Knowledge
 
-在 **事实 Bundle**（`$okf-dbexplain` 已 sync）上，反复把问数意图写成 `business/` 与 `queries/`。
+Add human-owned Business meaning to an existing query-ready database Bundle.
+This Skill edits knowledge artifacts; it does not answer live data questions.
 
-## 反复调用时怎么做
+## Requirements
 
-每一次都一样，**先探查已有 business**，再决定更新还是新建：
+- Require a Bundle whose physical Table Concepts have SQL binding v2. If required
+  physical facts are missing, report the exact missing tables, columns, or
+  relationships; do not invent them or assume another Skill is installed.
+- Use `okf` and, only when SQL verification is required, `dbexplain`. Check each
+  command before first use; do not install software or read database config.
+- Never guess a business definition, enum meaning, metric expression, join, row
+  filter, user identity, or lifecycle status.
 
-```text
-R1 读 Bundle + dbexplain 探查 + 盘点已有 business/queries
-        ↓
-    同一业务已有 Concept？
-      是 → 提案里写「更新这些文件」
-      否 → 提案里写「新建这些文件」
-        ↓
-R2 逻辑提案 + SQL 例子 → 等你确认
-        ↓
-R3 写入（改已有 或 overlay-draft 新建）
-        ↓
-    必须：okf dbexplain overlay-index   ← 你不用手改 index.md
-        ↓
-R4 报告
+## Conditional References
+
+- Read [discovery.md](references/discovery.md) to inventory existing Business and
+  map requested meaning to comments and physical bindings.
+- Read [authoring.md](references/authoring.md) only for the artifact types being
+  created or changed.
+- Read [saved-query-evidence.md](references/saved-query-evidence.md) when the user
+  supplies established SQL to preserve as reusable NL2SQL evidence.
+- Read [examples.md](references/examples.md) when a concrete proposal or Concept
+  shape would help.
+
+## Workflow
+
+Progress:
+
+- [ ] Inventory the current Bundle and matching Business
+- [ ] Classify every change as update or create
+- [ ] Present a reviewable proposal
+- [ ] Wait for explicit approval
+- [ ] Apply, rebuild indexes, and validate
+
+### 1. Inventory
+
+Validate the Bundle, inspect the relevant overlay indexes and full matching
+Concepts, and follow their physical relations. Identify existing Concepts by
+meaning and binding, not filename alone.
+
+### 2. Propose
+
+Show the user:
+
+```markdown
+Business proposal
+
+| Action | Artifact | Existing target or new path | Evidence |
+| --- | --- | --- | --- |
+
+Business definitions requiring confirmation: <only unresolved decisions>
+SQL example and verification: <only for a Saved Query or SQL-backed Metric>
 ```
 
-**index.md：** 第一次 `$okf-dbexplain` sync 就已经建好空的 `business/*/index.md`、`queries/index.md`。模板只在本 Skill references 中，不进入运行时 Bundle。
-你**不要手写索引页**。新建或改了 title/description 之后，跑 `overlay-index`，索引会按磁盘上的 Concept **重生**。okf-mcp 检索扫的是 Concept 文件本身；索引是给人和其他 Agent **浏览目录**用的，必须和正文一致。
+Update a matching Concept in place. Create only missing meaning. A successful
+validation or SQL execution is not approval to write.
 
-## 最高优先级规则
+### 3. Apply After Approval
 
-1. **先盘点再动手**：打开 `business/datasets/index.md`、`queries/index.md`，并用 `okf search`。
-2. **同一业务 → 更新，不要复制一份**。`overlay-draft` **不会覆盖**已有 dataset/relationship。
-3. **先提案、后写入**；有疑点就问，不能猜。
-4. 每个 semantic Concept 同时维护顶层 `relations` 与 Markdown 投影；okf-mcp 核心不解析 `semantic.*`。
-5. **写完必跑 overlay-index + adapter validate**（用户不必关心 index 怎么排）。
+- Edit existing human-owned overlay Markdown directly.
+- Use `okf dbexplain overlay-draft --bundle-root <dir> --tables <scope>` only to
+  create missing mechanically derived Dataset/Relationship drafts. It never
+  updates existing files.
+- For a Saved Query, execute the exact single-source read-only SQL successfully
+  before recording `process:dbexplain` verification. Execution proves the SQL ran,
+  not that the business definition is human-reviewed.
+- Keep new or unreviewed claims `draft`; do not invent human verification.
+- Never store credentials, host data, or result rows in the Bundle.
 
-完整协议：[references/confirmation-loop.md](references/confirmation-loop.md)
+### 4. Validate
 
-## 什么叫「同样的业务」
-
-| 已有 Concept | 判定命中 | 本轮动作 |
-| --- | --- | --- |
-| `business/datasets/<slug>.md` 的 `physical_table` 就是本轮那张表 | 同表 dataset | **更新**该文件（title/aliases/description/fields/enum），不 overlay-draft 覆盖 |
-| `queries/<slug>.md` 回答同一问数（同一 grain：谁、什么指标、什么时间过滤） | 同问数 query | **更新**该 SQL 与 description |
-| `business/relationships/` 连接同一对 dataset | 同 join | **更新** title/description；不新建第二份 |
-| `business/terms/` 绑定同一业务词 | 同术语 | **更新** aliases/bindings |
-| 上表都没命中 | 新业务 | **新建**：缺的表才 `overlay-draft --tables`；新 query 新文件 |
-
-提案里必须列出「更新 / 新建」对照表，让用户看见不会重复造一份。
-
-## 典型用户说法
-
-```text
-请你基于 okf-bundle-business，帮我更新 test-bundle 的 Business。
-业务：统计 XXXX 用户在 2026年5月的 token 消耗总量。
-```
-
-第二次又说「再加按部门汇总」→ 再走 R1：token 用量表若已有 dataset 则更新描述；新 query 新建。
-
-## Route The Task
-
-| Read when | Reference |
-| --- | --- |
-| **多轮确认 + 更新/新建** | [references/confirmation-loop.md](references/confirmation-loop.md) |
-| dbexplain → business | [references/dbexplain-for-business.md](references/dbexplain-for-business.md) |
-| 写清楚语义 | [references/authoring.md](references/authoring.md) |
-| Workflow / overlay-index | [references/workflow.md](references/workflow.md) |
-| Examples | [references/examples.md](references/examples.md) |
-
-## 首轮最少要问清
-
-1. **Bundle root**
-2. **dbexplain label**（需要 `execute` 时）；Bundle 已足够时可先只读 Bundle
-3. 用户标识等无法从注释唯一确定的字段
-
-## Standard Procedure
-
-### R1 — 探查 + 盘点已有 business
-
-```bash
-okf --root <bundle-root> --strict-links validate
-okf --root <bundle-root> search "<关键词>"
-```
-
-必读：`business/datasets/index.md`、`queries/index.md`、命中的 dataset/query 正文、`tables/`、`observations/current.md`。
-
-需要连库时：
-
-```bash
-dbexplain check --label <label>
-dbexplain collect --label <label> --tables
-# 只有表清单；需要字段/注释时读取已同步 Table Concept，或：
-dbexplain collect --label <label> --table <table>
-```
-
-### R2 — 逻辑提案（不写文件）
-
-模板见 confirmation-loop。必须含：更新哪些文件 / 新建哪些文件、SQL 例子、请用户确认。
-
-### R3 — 写入（仅同意后）
-
-**更新：** 直接改已有 Markdown（SQL、aliases、enum、description）。
-
-**新建缺失的 dataset/relationship：**
-
-```bash
-okf dbexplain overlay-draft --bundle-root <dir> --tables <仅缺 dataset 的表> --dry-run
-# 再 apply。已有文件会被跳过。
-```
-
-然后写/改 `queries/`，精修 title。
-
-Agent 生成 Saved Query 时，必须先用 `dbexplain execute` 成功执行完全相同的 SQL，
-再把 `process:dbexplain` verification（UTC、statement SHA-256、instance label）写入。
-不得把结果行写入 Bundle。
-
-**最后（无论更新还是新建）：**
+Run after every applied change:
 
 ```bash
 okf dbexplain overlay-index --bundle-root <dir>
 okf dbexplain validate --bundle-root <dir>
+okf --root <dir> --strict-links validate
 ```
 
-不要手改任何 `index.md`。不要用 `sync --dry-run` 当收尾。
+If validation fails, fix the proposed artifacts and repeat validation. Finish by
+searching representative business terms and reporting updated/created paths.
 
-### R4 — 验证
+## Gotchas
 
-```bash
-okf --root <bundle-root> --strict-links validate
-okf --root <bundle-root> search "<业务词>"
-```
-
-## Hard Boundaries
-
-- 未同意前不写 `business/`、`queries/`。
-- 不覆盖用户已改语义去「重新 draft」同一文件。
-- 不猜 join / 用户列 / enum。
-- 不把 `execute` 结果行写入 Bundle。
-- 不手写 overlay `index.md`。
-- 不使用 `status: reviewed`；只使用 OKF 的 `draft/stable/deprecated`。
-
-## Required Output
-
-**R2：** 提案（含更新 vs 新建对照）+ SQL 例子
-**R3 后：** 文件路径 + `overlay-index` 已跑 + Coverage Report
+- `overlay-draft` skips existing artifacts; it is not an update mechanism.
+- Never hand-edit overlay `index.md`; `overlay-index` rebuilds it.
+- Generic OKF search ignores nested `semantic.*`; expose field names, synonyms,
+  enum labels, and metric meaning in title/description/body.
+- A table comment and column comments are primary physical evidence for drafting
+  descriptions and fields, but ambiguous business meaning still needs user input.
+- Inferred physical relationships are candidates, not approved Business joins.
+- Business-maintained SQL is authoritative query evidence. Preserve its JOINs,
+  filters, aggregates, and grain; do not redesign it or derive other Business
+  Concepts unless the user explicitly asks.
+- A parameterized Saved Query stores an executable example statement, not an
+  unexecutable placeholder template. Its documented example values are never
+  defaults for later NL2SQL questions.
+- SQL examples are unnecessary for aliases, descriptions, terms, and explicit
+  enum enrichment unless those edits also create a Saved Query or SQL expression.

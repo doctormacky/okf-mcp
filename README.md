@@ -38,15 +38,15 @@ command -v dbexplain && dbexplain --version
 
 ---
 
-## Quick start (database Bundle → NL2SQL)
+## Quick start (database knowledge and querying)
 
-Typical path for SmartAdmin / Taiyi-style databases:
+The CLI and Skills are independent capabilities. Install the ones needed for a task:
 
 ```text
-1. Install okf-mcp + dbexplain
-2. $okf-dbexplain     → sync physical facts into a Bundle directory
-3. $okf-bundle-business → add business semantics (multi-round, user-approved)
-4. Point okf-mcp at the Bundle → other agents search & assemble SQL
+okf CLI / MCP       → validate, index, and serve knowledge
+okf-dbexplain       → generate or refresh physical facts
+okf-bundle-business → add or correct Business knowledge
+okf-nl2sql          → query real data and return traceable results
 ```
 
 ### 1. Install okf-mcp
@@ -88,9 +88,8 @@ okf dbexplain validate --bundle-root /data/okf/my-database
 ```text
 $okf-bundle-business
 Bundle: /data/okf/my-database
-label: prod-main
-Task: total token usage for user XXXX in May 2026
-Propose the logic and example SQL first; write only after I approve.
+Task: add buyer aliases to Customers and project explicit order-state codes
+from the column comment. Inventory and propose before writing.
 ```
 
 After writes:
@@ -115,12 +114,14 @@ Skills live under `.agents/skills/`. Register them in your agent host (Cursor, C
 | Skill | When to use | You say (example) |
 | --- | --- | --- |
 | **[okf-dbexplain](.agents/skills/okf-dbexplain/)** | First-time or refresh **physical** Bundle from dbexplain | `$okf-dbexplain sync prod-main to /data/okf/my-db` |
-| **[okf-bundle-business](.agents/skills/okf-bundle-business/)** | Add/update **business** layer on an existing Bundle (NL2SQL) | `$okf-bundle-business update business on test-bundle for token usage` |
+| **[okf-bundle-business](.agents/skills/okf-bundle-business/)** | Add or correct Business knowledge in a query-ready Bundle | `$okf-bundle-business add buyer aliases to Customers` |
+| **[okf-nl2sql](.agents/skills/okf-nl2sql/)** | Execute read-only SQL from MCP knowledge and return real data | `$okf-nl2sql show net sales after refunds by store last month` |
 | **[okf-knowledge-publisher](.agents/skills/okf-knowledge-publisher/)** | Publish/update **central** OKF knowledge via `okf knowledge` + hosted MCP | `$okf-knowledge-publisher publish workspace to server` |
 
 Also shipped: **[okf-v02-migration](.agents/skills/okf-v02-migration/)** — only when migrating legacy v0.1 catalogs to v0.2.
 
-**Workflow rule:** physical facts (`okf-dbexplain`) → business semantics (`okf-bundle-business`) → MCP retrieval. Do not let one Skill guess the other's job.
+Each Skill may be installed alone or in any combination and does not assume the
+others exist. Composition is a user or Agent Host decision.
 
 Full reference: [docs/SKILLS.md](docs/SKILLS.md) · [docs/SKILLS_ZH.md](docs/SKILLS_ZH.md)
 
@@ -149,7 +150,9 @@ Full tool catalog: [docs/MCP_TOOLS.md](docs/MCP_TOOLS.md) · [docs/MCP_TOOLS_ZH.
 
 **Resources:** `okf-documents` template — read any indexed Markdown concept by `okf://` URI.
 
-**NL2SQL workflow:** `search_concepts` → `get_concept` → `get_neighbors` → assemble SQL from saved queries in `queries/`.
+**NL2SQL workflow:** `$okf-nl2sql` calls `search_concepts` → `get_concept` →
+`get_neighbors`, then assembles SQL from business knowledge, physical bindings,
+and Saved Queries. It falls back to bounded dbexplain discovery only when needed.
 
 Optional write/authoring tools (`okf_propose_*`, `okf_apply_changes`, `load_remote_bundle`) are available on **local stdio/HTTP only** with extra flags; **hosted omits them**. Knowledge publishing uses `okf knowledge` CLI, not MCP writes.
 
@@ -213,7 +216,7 @@ Prefer **`hosted`** for anything beyond localhost.
 
 ```bash
 okf --root /path/to/bundle validate
-okf --root /path/to/bundle search "token"
+okf --root /path/to/bundle search "order state"
 okf --root /path/to/bundle concept business/datasets/my-dataset
 okf dbexplain inspect --include prod-main
 okf dbexplain validate --bundle-root /path/to/database-bundle

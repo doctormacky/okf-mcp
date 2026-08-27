@@ -2,200 +2,102 @@
 
 [English](SKILLS.md) · [简体中文](SKILLS_ZH.md)
 
-okf-mcp 在 `.agents/skills/` 下提供四个 Skill。做数据库问数时，通常按顺序用 **三个**：
+okf-mcp 在 `.agents/skills/` 下提供五个相互独立的 Skill。可以单独安装，也可以任意
+组合；任何 Skill 都不假设其他 Skill 已安装，也不存在运行时自动转交。
 
-```text
-okf-dbexplain  →  okf-bundle-business  →  （可选）okf-knowledge-publisher
-```
+## 能力清单
 
-在 Agent 宿主（Cursor、Codex 等）中注册该目录后，即可 `$skill名` 调用。
+| Skill | 独立职责 | 典型请求 |
+| --- | --- | --- |
+| [okf-dbexplain](../.agents/skills/okf-dbexplain/) | 从数据库生成或刷新物理事实 Bundle | “预览并同步 prod-main 的表、字段和外键” |
+| [okf-bundle-business](../.agents/skills/okf-bundle-business/) | 增补或纠正已有 query-ready Bundle 的 Business 知识 | “给客户数据集增加 buyer 别名并补订单状态枚举” |
+| [okf-nl2sql](../.agents/skills/okf-nl2sql/) | 把业务问题转换为单数据源只读 SQL 并返回真实结果 | “上个月各门店退款后的实际销售额是多少” |
+| [okf-knowledge-publisher](../.agents/skills/okf-knowledge-publisher/) | 预览、确认并发布中心 OKF 知识快照 | “把 workspace dry-run 后等我确认再发布” |
+| [okf-v02-migration](../.agents/skills/okf-v02-migration/) | 检查并迁移旧版 OKF v0.1 内容 | “预览这个目录的 v0.2 迁移” |
 
----
+这些能力可以组成工作流，但组合由用户或 Agent Host 决定，不是 Skill 的安装依赖。
+缺少某项能力时，当前 Skill 应报告具体缺口，而不是假设另一个 Skill 可用。
 
-## okf-dbexplain — 同步物理事实
+## `okf-dbexplain`
 
-**路径：** [.agents/skills/okf-dbexplain/](../.agents/skills/okf-dbexplain/)
-
-### 什么时候用
-
-| 适用 | 不适用 |
-| --- | --- |
-| 从线上库首次生成 Bundle | 补 business 语义、直接回答问数 |
-| schema 变更后刷新表 / 外键 / observations | `overlay-draft`、写 `business/` |
-| 执行 `okf dbexplain inspect/check/sync` | 猜 join、枚举、SQL |
-
-### 前置条件
-
-- 已安装 [dbexplain](https://github.com/IamWWT/dbexplain) v0.1.11 或更高版本且在 `PATH` 中
-- 用户自行维护 `.env.dbexplain`（Skill **不会**读写）
-- 目标 `--bundle-root` 绝对路径
-
-### 怎么调用
+适用于首次生成或刷新物理事实层：Table SQL binding、字段 comments、声明外键、推断关系
+候选和 observations。它不编辑 Business，也不执行业务问数。
 
 ```text
 $okf-dbexplain
-请检查 prod-main，并 sync 到 /data/okf/my-database
+请检查 prod-main，并预览同步到 /data/okf/my-database
 ```
 
-### Skill 会做什么
+核心约束：
 
-1. `okf dbexplain inspect --include <label>`
-2. `okf dbexplain check --include <label>`
-3. `okf dbexplain sync ... --dry-run` → 汇报 plan → **等你确认**
-4. `okf dbexplain sync ... --expect-plan <digest>` 正式写入
-5. `okf dbexplain validate --bundle-root <bundle>`
-6. 输出 Facts Report，提醒重启 MCP，并引导使用 `$okf-bundle-business`
+- dbexplain v0.1.11 或更高版本在 `PATH` 中；
+- 不读取数据库配置，不使用 sample rows；
+- `sync --dry-run` 后等待批准，再带同一 plan digest apply；
+- 保留已有 Business overlay 内容；
+- 完成后运行 `okf dbexplain validate` 并报告物理事实和缺口。
 
-### 产出（仅物理层）
+## `okf-bundle-business`
 
-- `tables/` — 列级事实
-- `relationships/declared/` — 声明外键
-- `observations/current.md` — 拓扑与诊断摘要
-- 空的 reserved overlay 索引（`business/*/index.md`、`queries/index.md`）；模板留在 Skills 中
-
-再次 sync 只更新物理文件；已有 `business/`、`queries/` **不会被覆盖**。
-
----
-
-## okf-bundle-business — 编写 business 语义层
-
-**路径：** [.agents/skills/okf-bundle-business/](../.agents/skills/okf-bundle-business/)
-
-### 什么时候用
-
-| 适用 | 不适用 |
-| --- | --- |
-| 增改 dataset、join、枚举、已保存 SQL | 物理层 sync（`okf-dbexplain`） |
-| 在已有 Bundle 上做问数 / NL2SQL | 未经确认就猜测写入 |
-| `$okf-dbexplain` 已完成之后 | 对生产库直接跑 SQL |
-
-### 前置条件
-
-- Bundle 已由 `$okf-dbexplain` sync
-- 用户给出明确业务问题（谁、什么指标、时间范围、过滤条件）
-
-### 怎么调用
+仅在用户明确要求修改知识工件时使用。支持 Dataset、字段 aliases/synonyms、Term、Enum、
+Relationship、Metric、Policy 和 Saved Query。普通“统计多少、趋势、排行、查明细”不属于
+这个 Skill，因为它们要求数据结果而不是知识变更。
 
 ```text
 $okf-bundle-business
-Bundle: /data/okf/my-database
-label: prod-main
-业务：统计 XXXX 用户在 2026年5月的 token 消耗总量
-请先给逻辑和 SQL 例子，我确认后再写入
+请盘点 /data/okf/my-database 中已有 Business，给客户数据集增加 buyer 别名，
+并把订单 state 字段注释中的显式状态码投影为可检索枚举。先提案，批准后再写。
 ```
 
-### 多轮确认（每次相同）
+核心流程：盘点已有 → 更新/新建提案 → 明确批准 → 写入 → `overlay-index` → validate。
+
+核心约束：
+
+- 同一物理 binding 或同一业务定义更新原 Concept，不复制；
+- 表 comment 和字段 comment 是主要物理证据，但模糊业务含义仍需用户确认；
+- aliases、description、term、显式 enum 不强制 SQL 示例；
+- Saved Query 或 SQL-backed Metric 才需要执行完全相同的 SQL 进行机器验证；
+- 不手改 overlay `index.md`，不把结果行写入 Bundle。
+
+## `okf-nl2sql`
+
+面向不知道表结构的业务用户。它先通过 OKF MCP 检索 Business 和 comments；知识不足时
+使用 dbexplain 做无 sample 的受限实时探测，然后执行单 label 的只读 SQL。
 
 ```text
-R1  读 Bundle + dbexplain 探查 + 盘点已有 business/queries
-R2  逻辑提案 + SQL 例子 → 等你明确同意
-R3  更新已有文件 或 overlay-draft 新建 → 必须 overlay-index
-R4  覆盖率报告（adapter validate + search）
+$okf-nl2sql
+上个月各门店退款后的实际销售额是多少？按金额从高到低排列。
 ```
 
-### 常用命令（由 Agent 执行）
+核心约束：
+
+- 搜索使用 1–2 个原子业务词，因为 OKF lexical search 是全词 AND；
+- 表 comment 用于识别主题，字段 comment 用于指标、维度、时间和显式枚举召回；
+- `process:dbexplain` 证明 SQL 执行过，不证明业务口径已经人工审核；
+- 查询前固定基础 grain，防止反向一对多和多事实表重复计数；
+- 所有表属于同一 label，只执行单条 `SELECT` / `WITH ... SELECT`；
+- 只返回经过验证的业务结果及必要限制；SQL、物理字段、证据和执行元数据仅供内部使用；
+- 结果使用 Markdown 渲染，多行结果使用 Markdown 表格。
+
+## 独立安装
+
+将需要的 Skill 目录单独复制或链接到 Agent Host 的 Skills 路径。例如：
 
 ```bash
-# 探查（只读）
-okf dbexplain inspect --include <label>
-okf --root <bundle> search "token"
-
-# 为缺失表创建 overlay（必须带 scope）
-okf dbexplain overlay-draft --bundle-root <bundle> --tables <table> ...
-
-# 任意 business/queries 写入后 — 必跑
-okf dbexplain overlay-index --bundle-root <bundle>
-okf dbexplain validate --bundle-root <bundle>
+ln -sfn "$PWD/.agents/skills/okf-nl2sql" "$AGENT_SKILL_ROOT/okf-nl2sql"
 ```
 
-### 硬性规则
+安装多个 Skill 时分别建立链接。`agents/openai.yaml` 是可选宿主元数据，不是通用 Skill
+运行依赖。
 
-- 同一表 / 同一问数 / 同一 join **更新原文件**，不要复制第二份
-- `overlay-draft` **不会覆盖**已有 dataset 或 relationship
-- **先提案、后写入**
-- 同时维护匹配的 `semantic`、顶层 `relations` 与 Markdown links/body
-- Agent 生成 Saved Query 前必须成功执行 `dbexplain execute` 并记录 verification
-- **不要手改** `business/*/index.md`、`queries/index.md`，用 `overlay-index` 重建
+## 评测资产
 
----
+三个数据库 Skill 都包含：
 
-## okf-knowledge-publisher — 发布中心知识库
+- `evals/trigger-queries.json`：可定制的调用问题。`okf-nl2sql` 只提供一条通用模板，
+  用户可替换为自己的业务问题；知识编写类 Skill 仍保留正反触发用例；
+- `evals/output-scenarios.json`：comments、信任等级、fanout、inferred 和更新原 Concept
+  等与自身职责对应的可观察行为场景。`okf-dbexplain` 重点覆盖事实精确性、plan drift、
+  incomplete collection、unsupported kind 和 overlay preservation。
 
-**路径：** [.agents/skills/okf-knowledge-publisher/](../.agents/skills/okf-knowledge-publisher/)
-
-### 什么时候用
-
-| 适用 | 不适用 |
-| --- | --- |
-| 向 **hosted** 服务器发布/更新团队 OKF 目录 | 本地数据库 Bundle sync |
-| download → 编辑 → dry-run → submit | 直接调 rollout HTTP API |
-| 通过远程 MCP 验证已发布内容 | 替代 `$okf-bundle-business` 做库表语义 |
-
-### 前置条件
-
-- `okf hosted` 已启动，并配置 `OKF_READ_TOKEN` / `OKF_ROLLOUT_TOKEN`
-- 能访问知识库服务器 URL
-- 已确认服务器上的 bundle ID
-
-### 怎么调用
-
-```text
-$okf-knowledge-publisher
-从 https://knowledge.example 下载当前知识，补充新手册，dry-run 后等我确认再 submit
-```
-
-### 工作流
-
-```text
-download → 本地 enrich → okf knowledge submit --dry-run → 用户确认 → submit → MCP 验证
-```
-
-示例：
-
-```bash
-okf knowledge download --url https://knowledge.internal.example --out ./okf-work
-# 编辑 ./okf-work 下文件
-okf knowledge submit --workspace ./okf-work --dry-run
-# 确认后：
-okf knowledge submit --workspace ./okf-work
-```
-
-**读取**已发布知识始终走 **远程 MCP**（`list_bundles`、`search`、`get_concept`），不走本 Skill 的写入流程。
-
----
-
-## okf-v02-migration — 旧版目录迁移
-
-**路径：** [.agents/skills/okf-v02-migration/](../.agents/skills/okf-v02-migration/)
-
-仅在把 OKF **v0.1** 目录迁移到 v0.2 时使用，**不属于**数据库问数主路径。
-
----
-
-## 端到端示例（数据库 → Agent）
-
-```text
-# 1. 物理层
-$okf-dbexplain 把 prod-main sync 到 /data/okf/smartadmin
-
-# 2. 语义层（可多轮）
-$okf-bundle-business
-Bundle: /data/okf/smartadmin
-业务：按部门统计 2026年5月 token 用量
-… 确认提案 …
-
-# 3. 本地 MCP，供其它 Agent 检索
-okf --root /data/okf/smartadmin mcp
-# → 在 Cursor / Claude Desktop 配置 stdio MCP
-
-# 4. （可选）把运维文档发布到中心库
-$okf-knowledge-publisher 发布更新后的运维手册
-```
-
----
-
-## 在 Cursor 中注册
-
-将项目或用户 Skills 路径指向本仓库（或复制 `.agents/skills/` 到你的项目）。注册后用 `$okf-dbexplain`、`$okf-bundle-business` 等调用。
-
-详见：[OKF_CLI_SOURCE_INSTALL_UPDATE_ZH.md](OKF_CLI_SOURCE_INSTALL_UPDATE_ZH.md)
+先按目标业务定制通用模板，再在实际 Agent Client 中将每条 trigger query 至少运行三次，
+记录 Skill 是否被加载。评测运行方式由宿主决定，不在 Skill 中绑定特定模型或 CLI。

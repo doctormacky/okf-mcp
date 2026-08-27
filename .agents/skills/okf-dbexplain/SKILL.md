@@ -1,13 +1,6 @@
 ---
 name: okf-dbexplain
-description: >-
-  Generates or refreshes the facts-only physical layer of an OKF v0.2 database
-  Bundle from dbexplain (inspect, check, sync, validate): tables, declared
-  foreign keys, observations, and empty overlay scaffolds. Use when the user
-  asks to sync a database into an OKF Bundle, run okf dbexplain sync, inspect
-  or check SQL sources, refresh schema facts, or build a physical-only catalog.
-  Do not use for business overlays, 语义层, NL2SQL, overlay-draft, answering data
-  questions, or executing SQL; after sync, use okf-bundle-business.
+description: Use this skill when the user wants to inspect a SQL database or generate or refresh the facts-only physical layer of an OKF v0.2 database Bundle with tables, columns, SQL bindings, relationships, observations, and overlay indexes. Use it for connection checks and reviewed sync previews. Do not use for Business authoring, live data answers, SQL execution, or database writes.
 ---
 
 # Sync OKF Database Facts
@@ -16,10 +9,8 @@ Turn dbexplain metadata into a **facts-only** OKF Bundle: tables, declared and
 inferred relationships, observations, and reserved overlay indexes.
 okf-mcp can index this bundle for schema retrieval immediately.
 
-**Business semantics** (`business/datasets/`, `queries/`, …) are maintained by
-`$okf-bundle-business` after the user defines scope. This skill does not run
-`overlay-draft` or write overlay Concepts unless the user explicitly requests
-physical-only troubleshooting.
+Human-owned Business semantics (`business/`, `metrics/`, `queries/`, `policies/`)
+are outside this Skill. It does not run `overlay-draft` or edit overlay Concepts.
 
 ## Standard Procedure
 
@@ -70,15 +61,14 @@ Deliver a **Facts Report**:
 - `observations/current.md` highlights (core tables, clusters, diagnostics)
 - Nested physical catalog indexes and any untouched legacy scaffolds removed
 - Reminder: restart okf-mcp after sync to re-index
-- **Next step:** use `$okf-bundle-business` when ready to add business overlays
+- Report Business overlay indexes as empty, preserved, or already populated
 
 ## Hard Boundaries
 
 - Never read or modify database configuration.
 - Never install or upgrade dbexplain.
 - Never collect with `--sample`; never put credentials or sample rows in the Bundle.
-- **Never run `overlay-draft` or create `business/` Concepts** — that is
-  `okf-bundle-business`.
+- **Never run `overlay-draft` or create human-owned Business Concepts.**
 - Never invent SQL, joins, or enum meanings.
 - Sync preserves existing overlay bytes; only overlay indexes regenerate.
 - A future dbexplain version is accepted when the required CLI/JSON contract still works;
@@ -89,10 +79,9 @@ Deliver a **Facts Report**:
 - Applied sync with `sql_binding.version: 2` on tables
 - `join_binding` on declared relationships
 - `validForProject: true` on validate
-- Facts Report + pointer to `okf-bundle-business`
+- Facts Report with explicit physical-layer gaps and preserved overlay counts
 
 ## References
 
-- [references/sync.md](references/sync.md) — commands
 - [references/semantic-overlay.md](references/semantic-overlay.md) — contract (for reading only)
-- [references/overlay-authoring.md](references/overlay-authoring.md) — deferred to okf-bundle-business
+- [references/overlay-authoring.md](references/overlay-authoring.md) — physical/overlay ownership boundary

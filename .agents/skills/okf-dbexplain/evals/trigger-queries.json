@@ -1,0 +1,23 @@
+[
+  {"split":"train","should_trigger":true,"query":"请把 prod-main 的 SQL schema 生成一个新的 OKF v0.2 数据库 Bundle，先 dry-run 给我看"},
+  {"split":"train","should_trigger":true,"query":"数据库刚加了几个字段和注释，刷新 /data/okf/catalog 里的物理事实，但不要动 Business"},
+  {"split":"train","should_trigger":true,"query":"preview the table, column, and foreign-key changes before updating our OKF database bundle"},
+  {"split":"train","should_trigger":true,"query":"上次 OKF schema sync 的 plan 失效了，帮我重新检查数据源并生成可审核的计划"},
+  {"split":"train","should_trigger":true,"query":"校验这个 dbexplain 生成的 Bundle 是否还有有效 SQL binding 和完整物理引用"},
+  {"split":"train","should_trigger":true,"query":"先 inspect/check warehouse-main 是否能用于 query-ready OKF facts，然后预览同步"},
+  {"split":"validation","should_trigger":true,"query":"my manager wants the database knowledge catalog refreshed from PostgreSQL without changing human semantics"},
+  {"split":"validation","should_trigger":true,"query":"把最新的表和字段 comments 同步进现有 OKF 数据库目录，先让我审阅差异"},
+  {"split":"validation","should_trigger":true,"query":"first-time capture of mysql-main into an OKF physical-facts bundle"},
+  {"split":"validation","should_trigger":true,"query":"can u chek why the db-to-OKF facts refresh failed before writing anything?"},
+
+  {"split":"train","should_trigger":false,"query":"检查生产 PostgreSQL 能不能连接，并告诉我有哪些数据库，不需要 OKF Bundle"},
+  {"split":"train","should_trigger":false,"query":"解释 orders 表有哪些字段和索引，不要生成或刷新知识目录"},
+  {"split":"train","should_trigger":false,"query":"上个月每个门店的实际销售额是多少，直接查数据库给结果"},
+  {"split":"train","should_trigger":false,"query":"给现有 Customer Dataset 增加 buyer 别名和客户价值指标"},
+  {"split":"train","should_trigger":false,"query":"为 orders 和 customers 运行 overlay-draft 并补 Business relationship"},
+  {"split":"train","should_trigger":false,"query":"把修改好的 OKF workspace 发布到 hosted 服务"},
+  {"split":"validation","should_trigger":false,"query":"预览这个旧知识目录从 OKF v0.1 到 v0.2 的迁移"},
+  {"split":"validation","should_trigger":false,"query":"执行 SELECT COUNT(*) FROM orders 并返回真实行数"},
+  {"split":"validation","should_trigger":false,"query":"分析 Redis keyspace 的结构和热点 key"},
+  {"split":"validation","should_trigger":false,"query":"比较两个数据库的 schema 差异，输出一份 Markdown 报告，不创建 Bundle"}
+]

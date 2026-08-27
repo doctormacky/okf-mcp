@@ -1,11 +1,11 @@
 # Overlay Authoring (Deferred)
 
-Business overlay authoring is handled by **`okf-bundle-business`**, not this skill.
+Business overlay authoring is outside this physical synchronization Skill.
 
-After `okf-dbexplain` sync:
+During physical synchronization:
 
-1. Use `$okf-bundle-business` to scope tables and add `business/`, `queries/`.
-2. See `okf-bundle-business/references/quick-patterns.md` for common shapes.
+1. Preserve existing `business/`, `metrics/`, `queries/`, and `policies/` bytes.
+2. Report missing Business coverage as a knowledge gap without editing it.
 3. Contract: [semantic-overlay.md](semantic-overlay.md).
 
 This skill only seeds empty overlay folders and guides on first sync.

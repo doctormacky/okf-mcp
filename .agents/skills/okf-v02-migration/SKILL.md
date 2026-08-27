@@ -1,6 +1,6 @@
 ---
 name: okf-v02-migration
-description: Safely analyze and stage an existing Open Knowledge Format catalog migration to OKF v0.2. Use only when explicitly asked to check, preview, or propose a v0.1 or mixed catalog migration.
+description: Use this skill when the user explicitly wants to check, preview, or stage an existing Open Knowledge Format v0.1 or mixed catalog migration to OKF v0.2. Analyze migration readiness and create reviewable proposals without rewriting files directly or accepting proposals automatically. Do not use for ordinary validation, Business enrichment, or physical database synchronization.
 ---
 
 # OKF v0.2 Migration

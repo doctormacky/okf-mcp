@@ -34,10 +34,36 @@ Business authority and SQL executability are separate axes:
 
 - Business authority: current user clarification, then human-reviewed Business,
   then explicit stable comments, then draft/unverified Business.
-- Executability: unchanged machine-confirmed Saved Query, then SQL binding v2 and
-  executable declared relationship, then current live metadata.
+- Executability: matching machine-confirmed Saved Query logic, then SQL binding
+  v2 and executable declared relationship, then current live metadata.
 
 An executable statement does not upgrade its business authority.
+
+## Saved Query Evidence
+
+A Saved Query is evidence for assembling the current SQL, not a separate runtime.
+Use it only after reading the full Concept through MCP and matching its purpose,
+fixed population, metric meaning, output grain, and source label to the current
+question.
+
+Add its reusable parts to the evidence ledger: established JOINs, fixed filters,
+aggregates, output aliases, physical tables, and documented parameter roles. Keep
+current user clarification, human-reviewed Metrics, and Policies authoritative
+when they conflict with the query.
+
+- If the Concept says it has no parameters and every intent slot matches, the
+  assembled SQL may remain identical to the stored statement.
+- If it documents parameters, obtain current values from the user's question and
+  render them using the recorded type, shape, timezone, escaping, and SQL literal
+  rules. Example values never fill missing intent.
+- If parameter meaning, type, or current value is missing, ask in business terms.
+  Do not infer parameters from undocumented literals in older Saved Queries.
+- A smaller output can use an outer projection. Add columns only from grounded
+  bindings and re-check grain and grouping; a new JOIN, population, metric, or
+  grain returns to the normal planning and fanout workflow.
+
+The stored verification proves only the exact saved example executed. Execute the
+fully assembled current SQL through dbexplain before using its result.
 
 ## Comments
 

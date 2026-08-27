@@ -49,5 +49,35 @@
       "Asks the user to choose between the business definitions without exposing physical fields",
       "Does not execute SQL before the definition is resolved"
     ]
+  },
+  {
+    "name":"matching fixed Saved Query evidence",
+    "query":"给我本月财务月结对账结果",
+    "fixture":"a machine-confirmed parameter-free Saved Query whose purpose, fixed population, grain, label, and output exactly match the request",
+    "expected_behavior":[
+      "Reads the full Saved Query Concept through MCP and records it in the evidence ledger",
+      "Uses its established SQL logic without rediscovering JOINs or fixed filters",
+      "Still checks applicable Policies and executes the assembled SQL through dbexplain"
+    ]
+  },
+  {
+    "name":"parameterized Saved Query guides assembly",
+    "query":"查华东一店 8 月 1 日到 8 月 7 日已支付和已发货订单",
+    "fixture":"a matching Saved Query with an executable example plus documented store, date-range, and state-list types and literal rendering",
+    "expected_behavior":[
+      "Retrieves the Saved Query with other relevant MCP knowledge and reuses its JOIN, fixed predicates, and grain as evidence",
+      "Assembles current literals from the user's values using the documented types and rendering rather than the stored examples",
+      "Executes the final assembled SQL and does not treat the stored statement digest as current execution proof"
+    ]
+  },
+  {
+    "name":"Saved Query example is not a default",
+    "query":"查某门店最近一周订单，但用户没有说明门店",
+    "fixture":"a relevant Saved Query whose parameter table contains a sample store ID",
+    "expected_behavior":[
+      "Asks which business store is intended without exposing the physical parameter location",
+      "Does not use the sample store ID or infer a value",
+      "Does not execute until the current parameter is resolved"
+    ]
   }
 ]

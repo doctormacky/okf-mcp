@@ -293,8 +293,23 @@ async function main() {
     assert.equal(packedPaths.has(".agents/skills/okf-dbexplain/agents/openai.yaml"), true);
     assert.equal(packedPaths.has(".agents/skills/okf-dbexplain/references/sync.md"), true);
     assert.equal(packedPaths.has(".agents/skills/okf-dbexplain/references/semantic-overlay.md"), true);
+    assert.equal(packedPaths.has(".agents/skills/okf-dbexplain/evals/trigger-queries.json"), true);
+    assert.equal(packedPaths.has(".agents/skills/okf-dbexplain/evals/output-scenarios.json"), true);
     assert.equal(packedPaths.has(".agents/skills/okf-bundle-business/SKILL.md"), true);
     assert.equal(packedPaths.has(".agents/skills/okf-bundle-business/agents/openai.yaml"), true);
+    assert.equal(packedPaths.has(".agents/skills/okf-bundle-business/references/discovery.md"), true);
+    assert.equal(packedPaths.has(".agents/skills/okf-bundle-business/references/authoring.md"), true);
+    assert.equal(packedPaths.has(".agents/skills/okf-bundle-business/references/examples.md"), true);
+    assert.equal(packedPaths.has(".agents/skills/okf-bundle-business/evals/trigger-queries.json"), true);
+    assert.equal(packedPaths.has(".agents/skills/okf-bundle-business/evals/output-scenarios.json"), true);
+    assert.equal(packedPaths.has(".agents/skills/okf-knowledge-publisher/SKILL.md"), true);
+    assert.equal(packedPaths.has(".agents/skills/okf-nl2sql/SKILL.md"), true);
+    assert.equal(packedPaths.has(".agents/skills/okf-nl2sql/agents/openai.yaml"), true);
+    assert.equal(packedPaths.has(".agents/skills/okf-nl2sql/references/retrieval-and-grounding.md"), true);
+    assert.equal(packedPaths.has(".agents/skills/okf-nl2sql/references/live-database-discovery.md"), true);
+    assert.equal(packedPaths.has(".agents/skills/okf-nl2sql/references/inferred-join-validation.md"), true);
+    assert.equal(packedPaths.has(".agents/skills/okf-nl2sql/evals/trigger-queries.json"), true);
+    assert.equal(packedPaths.has(".agents/skills/okf-nl2sql/evals/output-scenarios.json"), true);
     [
       ".github/",
       ".okf-proposals/",

@@ -1,12 +1,6 @@
 ---
 name: okf-knowledge-publisher
-description: >-
-  Create and update an OKF v0.2 knowledge workspace, preview the server-side
-  changes, require explicit user confirmation, submit the snapshot through the
-  okf knowledge CLI, and verify the published knowledge through remote MCP.
-  Use for publishing, updating, enriching, dry-running, or validating the
-  central OKF knowledge base. Reading and querying published knowledge remains
-  an MCP operation; this Skill manages the controlled write workflow.
+description: Use this skill when the user wants to publish or update the central OKF v0.2 knowledge base through a controlled workspace workflow that downloads the current snapshot, previews server-side changes, requires explicit confirmation, submits through the okf knowledge CLI, and verifies through remote MCP. Do not use merely to read published knowledge or edit a local database Bundle.
 ---
 
 # Publish OKF Knowledge

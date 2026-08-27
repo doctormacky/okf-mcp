@@ -1,0 +1,23 @@
+[
+  {"split":"train","should_trigger":true,"query":"请在这个 query-ready Bundle 里给客户数据集增加 buyer 和 purchaser 两个业务别名"},
+  {"split":"train","should_trigger":true,"query":"订单状态注释已经有 1待支付 2已支付 3取消，帮我丰富成可检索的业务枚举，先提案"},
+  {"split":"train","should_trigger":true,"query":"补充一个订单归属客户的 Business relationship，数据库外键已经在 Bundle 里"},
+  {"split":"train","should_trigger":true,"query":"修正现有的收入指标定义：需要扣除退款，更新原来的 metric 不要新建"},
+  {"split":"train","should_trigger":true,"query":"给知识 Bundle 加一条禁止查询 password_hash 的 policy"},
+  {"split":"train","should_trigger":true,"query":"我有一条业务长期在用的订单 SQL，里面门店、起止日期和状态列表会变；把这条可执行样例沉淀进 Bundle，参数类型和填法写清楚，先提案"},
+  {"split":"validation","should_trigger":true,"query":"丰富设备事件的 business：一行是什么、事件时间的同义词、以及站点关联"},
+  {"split":"validation","should_trigger":true,"query":"update the existing customer lifetime value metric semantics in this OKF database bundle"},
+  {"split":"validation","should_trigger":true,"query":"知识里客服组也叫处理组，帮我更新已有 term 和字段 synonyms"},
+  {"split":"validation","should_trigger":true,"query":"~/reports 里有几条财务常用 SQL，我会逐条告诉你查询用途；请查重后作为可检索 Saved Query 丰富现有 Bundle"},
+
+  {"split":"train","should_trigger":false,"query":"上个月每个客户的净收入是多少？直接给我数据库结果"},
+  {"split":"train","should_trigger":false,"query":"统计昨天各站点告警数并按降序排列"},
+  {"split":"train","should_trigger":false,"query":"从数据库首次生成物理表和外键 Bundle"},
+  {"split":"train","should_trigger":false,"query":"数据库连接失败了，帮我检查网络和账号配置"},
+  {"split":"train","should_trigger":false,"query":"解释什么是 semantic layer，不要修改任何文件"},
+  {"split":"train","should_trigger":false,"query":"帮我优化这条 SQL 的执行计划"},
+  {"split":"validation","should_trigger":false,"query":"发布刚刚修改完的 OKF 知识到 hosted 服务"},
+  {"split":"validation","should_trigger":false,"query":"show me the top ten products by actual sales this week"},
+  {"split":"validation","should_trigger":false,"query":"检查这个 Bundle 是否符合 OKF v0.2，不要丰富 Business"},
+  {"split":"validation","should_trigger":false,"query":"把 Redis 里的 key 按前缀统计一下"}
+]

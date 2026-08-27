@@ -1,14 +1,6 @@
 ---
 name: okf-nl2sql
-description: >-
-  Use this skill when the user wants an actual answer from a SQL database in
-  business terms, including totals, counts, trends, rankings, comparisons, or
-  bounded detail, even when they do not know the tables, columns, SQL dialect,
-  or data-source label. Retrieve relevant OKF knowledge, assemble single-source
-  read-only SQL, execute it through dbexplain, and return verified business
-  results without exposing the SQL. Do not use for database writes, schema
-  synchronization, knowledge authoring,
-  NoSQL, or questions that do not require live data.
+description: Use this skill when the user wants an actual answer from a SQL database in business terms, including totals, trends, rankings, comparisons, or bounded detail, even when they do not know the schema, dialect, or data-source label. Retrieve relevant OKF knowledge through MCP, assemble single-source read-only SQL, execute it through dbexplain, and return verified results without exposing the SQL. Do not use for writes, schema synchronization, knowledge authoring, NoSQL, or questions that do not require live data.
 ---
 
 # Answer Business Questions With SQL
@@ -51,6 +43,10 @@ Read [retrieval-and-grounding.md](references/retrieval-and-grounding.md) when
 the first knowledge hit does not uniquely ground every required intent slot.
 Read full Concepts before using their bindings; compact search summaries are
 discovery results, not SQL evidence.
+
+When a Saved Query matches the business intent, use its full Concept as mature
+SQL evidence while assembling the current query. It does not bypass Metrics,
+Policies, grain checks, parameter clarification, or final execution.
 
 Prefer existing Bundle evidence. If required physical facts are absent or stale,
 read [live-database-discovery.md](references/live-database-discovery.md). If no
@@ -122,6 +118,8 @@ attempted SQL or guessing an answer.
   automatic proof of an ambiguous business definition or JOIN.
 - `process:dbexplain` proves that exact SQL executed; it does not prove that its
   business definition was human-reviewed.
+- Saved Query parameter examples explain representation; they are not defaults.
+  Missing current values require a business-language question.
 - `join_binding.executable: true` means a same-label declared foreign key with a
   unique target key. It does not mean human review.
 - A truncated detail result cannot support claims about all rows, uniqueness, or

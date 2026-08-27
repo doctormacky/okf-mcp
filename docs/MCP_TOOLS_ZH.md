@@ -125,7 +125,7 @@ Hosted **禁止** `--authoring`、`--write`、`--allow-remote-tool` 等参数。
 
 ## 问数场景：Agent 最常用的工具
 
-`$okf-dbexplain` sync + `$okf-bundle-business` 补语义之后：
+当已加载的数据库 Bundle 含物理 binding，并可能含 Business 语义时：
 
 ```text
 list_bundles          → 确认 Bundle 已加载

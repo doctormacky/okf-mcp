@@ -1,0 +1,64 @@
+[
+  {
+    "name":"first sync preserves exact physical facts",
+    "request":"Create a physical-facts Bundle from a PostgreSQL source",
+    "expected_behavior":[
+      "Inspects and checks the selected stable label before sync",
+      "Previews table, column, comment, key, index, and declared relationship facts without writing",
+      "Waits for explicit approval and applies the exact reviewed plan digest",
+      "Validates SQL binding v2 and reports a Facts Report"
+    ]
+  },
+  {
+    "name":"structural drift invalidates review",
+    "request":"Apply a previously reviewed sync after a column was added",
+    "expected_behavior":[
+      "Recollects the selected source during apply",
+      "Returns planChanged without modifying the Bundle",
+      "Requires a new preview and approval rather than retrying the stale digest"
+    ]
+  },
+  {
+    "name":"observation-only drift remains safe",
+    "request":"Apply a reviewed plan after only row estimates and operational observations changed",
+    "expected_behavior":[
+      "Applies the unchanged structural plan",
+      "Refreshes observation Concepts while preserving generated timestamps on unchanged physical Concepts",
+      "Reports observation-only changes separately"
+    ]
+  },
+  {
+    "name":"incomplete collection cannot deprecate knowledge",
+    "request":"Refresh a Bundle when one selected source fails collection",
+    "expected_behavior":[
+      "Stops on incomplete_dbexplain_collection",
+      "Does not deprecate or overwrite existing Concepts",
+      "Reports the failed source without guessing replacement facts"
+    ]
+  },
+  {
+    "name":"unsupported source fails before write",
+    "request":"Create query-ready physical facts from an unsupported SQL kind",
+    "expected_behavior":[
+      "Reports the unsupported binding dialect and supported query-ready kinds",
+      "Does not create a partial Bundle or silently downgrade the source"
+    ]
+  },
+  {
+    "name":"human overlays are byte-preserved",
+    "request":"Refresh physical facts in a Bundle that already contains Business overlays",
+    "expected_behavior":[
+      "Updates only generated physical facts, observations, and reserved indexes",
+      "Preserves existing human-owned Business Concept bytes",
+      "Reports overlay preservation counts"
+    ]
+  },
+  {
+    "name":"target change requires another review",
+    "request":"Apply a sync after the Bundle changed on disk since preview",
+    "expected_behavior":[
+      "Stops on bundle_target_changed without overwriting concurrent changes",
+      "Requires a fresh dry-run and explicit approval"
+    ]
+  }
+]

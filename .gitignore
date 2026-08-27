@@ -11,6 +11,8 @@ coverage/
 !.agents/skills/okf-dbexplain/**
 !.agents/skills/okf-bundle-business/
 !.agents/skills/okf-bundle-business/**
+!.agents/skills/okf-nl2sql/
+!.agents/skills/okf-nl2sql/**
 .okf-cache/
 .okf-proposals/
 *.tgz

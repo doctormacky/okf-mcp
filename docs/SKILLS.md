@@ -2,200 +2,115 @@
 
 [English](SKILLS.md) · [简体中文](SKILLS_ZH.md)
 
-okf-mcp ships four Skills under `.agents/skills/`. For database NL2SQL you typically use **three** in order:
+okf-mcp ships five independent Skills under `.agents/skills/`. Install any one or
+any combination. No Skill assumes another is installed, and there is no runtime
+handoff between Skills.
 
-```text
-okf-dbexplain  →  okf-bundle-business  →  (optional) okf-knowledge-publisher
-```
+## Capability Catalog
 
-Register the skill directory in your agent host (Cursor: Settings → Rules / Skills, or project `.agents/skills/`).
+| Skill | Independent responsibility | Example request |
+| --- | --- | --- |
+| [okf-dbexplain](../.agents/skills/okf-dbexplain/) | Generate or refresh a physical-facts Bundle from a database | “Preview and sync prod-main tables, columns, and foreign keys” |
+| [okf-bundle-business](../.agents/skills/okf-bundle-business/) | Add or correct Business knowledge in a query-ready Bundle | “Add buyer aliases to Customers and document order-state codes” |
+| [okf-nl2sql](../.agents/skills/okf-nl2sql/) | Turn business questions into single-source read-only SQL and real results | “What were net sales after refunds by store last month?” |
+| [okf-knowledge-publisher](../.agents/skills/okf-knowledge-publisher/) | Preview, confirm, and publish a central OKF snapshot | “Dry-run this workspace and wait for approval before publishing” |
+| [okf-v02-migration](../.agents/skills/okf-v02-migration/) | Check and migrate legacy OKF v0.1 content | “Preview this catalog's v0.2 migration” |
 
----
+These capabilities can participate in a larger workflow, but composition is a
+user or Agent Host decision, not an installation dependency. A Skill reports a
+missing capability directly instead of assuming another Skill is available.
 
-## okf-dbexplain — Sync physical facts
+## `okf-dbexplain`
 
-**Path:** [.agents/skills/okf-dbexplain/](../.agents/skills/okf-dbexplain/)
-
-### When to use
-
-| Use | Do not use |
-| --- | --- |
-| First-time Bundle from a live database | Business semantics, NL2SQL answers |
-| Refresh tables / FKs / observations after schema change | `overlay-draft`, writing `business/` |
-| `okf dbexplain inspect`, `check`, `sync` | Guessing joins, enums, or SQL |
-
-### Prerequisites
-
-- [dbexplain](https://github.com/IamWWT/dbexplain) v0.1.11 or newer installed and on `PATH`
-- User-maintained `.env.dbexplain` (Skill does **not** read or edit it)
-- Target `--bundle-root` directory (absolute path)
-
-### How to invoke
+Use for first-time or refreshed physical facts: Table SQL bindings, column
+comments, declared foreign keys, inferred candidates, and observations. It does
+not edit Business knowledge or answer live business questions.
 
 ```text
 $okf-dbexplain
-Please inspect prod-main and sync to /data/okf/my-database
+Inspect prod-main and preview a sync to /data/okf/my-database
 ```
 
-### What the Skill does
+Key constraints:
 
-1. `okf dbexplain inspect --include <label>`
-2. `okf dbexplain check --include <label>`
-3. `okf dbexplain sync ... --dry-run` → report plan → wait for approval
-4. `okf dbexplain sync ... --expect-plan <digest>` apply
-5. `okf dbexplain validate --bundle-root <bundle>`
-6. Facts Report + reminder to restart MCP + hand off to `$okf-bundle-business`
+- dbexplain v0.1.11 or newer is on `PATH`;
+- never read database config or collect sample rows;
+- preview with `sync --dry-run`, wait for approval, then apply the same digest;
+- preserve existing Business overlay bytes;
+- finish with `okf dbexplain validate` and report physical facts and gaps.
 
-### Outputs (physical layer only)
+## `okf-bundle-business`
 
-- `tables/` — column facts from dbexplain
-- `relationships/declared/` — declared FKs
-- `observations/current.md` — topology / diagnostics summary
-- Empty reserved overlay indexes (`business/*/index.md`, `queries/index.md`); templates stay in the Skills
-
-Re-sync updates physical files; existing `business/` and `queries/` bytes are preserved.
-
----
-
-## okf-bundle-business — Author business overlays
-
-**Path:** [.agents/skills/okf-bundle-business/](../.agents/skills/okf-bundle-business/)
-
-### When to use
-
-| Use | Do not use |
-| --- | --- |
-| Add/update datasets, joins, enums, saved queries | Physical schema sync (`okf-dbexplain`) |
-| NL2SQL / natural-language query semantics on an existing Bundle | Guessing without user confirmation |
-| After `$okf-dbexplain` sync is done | Running SQL against production |
-
-### Prerequisites
-
-- Bundle already synced by `$okf-dbexplain`
-- Clear business question from the user (who, metric, time range, filters)
-
-### How to invoke
+Use only when the user explicitly wants knowledge artifacts changed. It supports
+Datasets, field aliases/synonyms, Terms, Enums, Relationships, Metrics, Policies,
+and Saved Queries. Requests for counts, trends, rankings, or live detail results
+are not Business-authoring requests.
 
 ```text
 $okf-bundle-business
-Bundle: /data/okf/my-database
-label: prod-main
-Task: total token usage for user XXXX in May 2026
-Propose the logic and example SQL first; write only after I approve.
+Inventory /data/okf/my-database, add buyer aliases to Customers, and project
+the explicit order-state codes from the column comment. Propose before writing.
 ```
 
-### Confirmation loop (every time)
+Core workflow: inventory → update/create proposal → explicit approval → apply →
+`overlay-index` → validate.
+
+Key constraints:
+
+- update the existing Concept for the same physical binding or business meaning;
+- table and column comments are primary physical evidence, but ambiguous meaning
+  still requires user confirmation;
+- aliases, descriptions, Terms, and explicit Enums do not require example SQL;
+- Saved Queries and SQL-backed Metrics require exact SQL execution verification;
+- never hand-edit overlay indexes or store result rows in the Bundle.
+
+## `okf-nl2sql`
+
+Use for business users who do not know the schema. It searches OKF Business and
+comments first, falls back to bounded no-sample dbexplain discovery when needed,
+then executes read-only SQL on one label.
 
 ```text
-R1  Probe Bundle + dbexplain + inventory existing business/queries
-R2  Logic proposal + example SQL → wait for explicit approval
-R3  Update existing files OR overlay-draft new ones → overlay-index
-R4  Coverage report (adapter validate + search)
+$okf-nl2sql
+What were net sales after refunds by store last month, highest first?
 ```
 
-### Key commands (agent runs these)
+Key constraints:
+
+- search with one or two atomic terms because OKF lexical search is all-term AND;
+- table comments identify subjects; column comments retrieve measures,
+  dimensions, time fields, and explicit enumerations;
+- `process:dbexplain` proves execution, not human review of business meaning;
+- establish base grain and prevent reverse one-to-many or multi-fact fanout;
+- keep every table on one label and execute one `SELECT` / `WITH ... SELECT`;
+- return only verified business results and material limitations; keep SQL,
+  physical identifiers, evidence, and execution metadata internal;
+- render the result as Markdown, using a Markdown table for multi-row results.
+
+## Independent Installation
+
+Copy or link only the Skill directories needed by an Agent Host. For example:
 
 ```bash
-# Probe (read-only)
-okf dbexplain inspect --include <label>
-okf --root <bundle> search "token"
-
-# Create missing physical-backed overlays (scoped only)
-okf dbexplain overlay-draft --bundle-root <bundle> --tables <table> ...
-
-# After any business/queries write — mandatory
-okf dbexplain overlay-index --bundle-root <bundle>
-okf dbexplain validate --bundle-root <bundle>
+ln -sfn "$PWD/.agents/skills/okf-nl2sql" "$AGENT_SKILL_ROOT/okf-nl2sql"
 ```
 
-### Hard rules
+Create separate links when installing several Skills. `agents/openai.yaml` is
+optional host metadata, not a portable Skill runtime dependency.
 
-- **Update in place** when the same table / query / join already exists
-- `overlay-draft` **never overwrites** existing dataset or relationship files
-- **No write before approval**
-- Maintain matching `semantic`, top-level `relations`, and Markdown links/body text
-- Agent-generated Saved Queries require successful `dbexplain execute` verification
-- **Do not hand-edit** `business/*/index.md` or `queries/index.md` — use `overlay-index`
+## Evaluation Assets
 
----
+All three database Skills include:
 
-## okf-knowledge-publisher — Publish central knowledge
+- `evals/trigger-queries.json`: customizable invocation queries. `okf-nl2sql`
+  ships one generic template for users to replace with their own business
+  question; the authoring Skills keep balanced trigger/near-miss sets;
+- `evals/output-scenarios.json`: observable behavior cases for comments, trust,
+  fanout, inferred relationships, and in-place updates as applicable.
+  `okf-dbexplain` focuses on fact exactness, plan drift, incomplete collection,
+  unsupported kinds, and overlay preservation.
 
-**Path:** [.agents/skills/okf-knowledge-publisher/](../.agents/skills/okf-knowledge-publisher/)
-
-### When to use
-
-| Use | Do not use |
-| --- | --- |
-| Publish/update team-wide OKF catalog on a **hosted** server | Local database Bundle sync |
-| Download → edit → dry-run → submit via `okf knowledge` | Direct HTTP to rollout API |
-| Verify published content via remote MCP | Replacing `$okf-bundle-business` for DB semantics |
-
-### Prerequisites
-
-- `okf hosted` server running with `OKF_READ_TOKEN` / `OKF_ROLLOUT_TOKEN`
-- Network access to the knowledge server URL
-- Confirmed bundle ID on the server
-
-### How to invoke
-
-```text
-$okf-knowledge-publisher
-Download current knowledge from https://knowledge.example, add the new runbook, dry-run, then submit after I approve.
-```
-
-### Workflow
-
-```text
-download → enrich locally → okf knowledge submit --dry-run → user confirms → submit → MCP verify
-```
-
-Example:
-
-```bash
-okf knowledge download --url https://knowledge.internal.example --out ./okf-work
-# edit files under ./okf-work
-okf knowledge submit --workspace ./okf-work --dry-run
-# after approval:
-okf knowledge submit --workspace ./okf-work
-```
-
-Reading published knowledge is always through **remote MCP** (`list_bundles`, `search`, `get_concept`), not through this Skill.
-
----
-
-## okf-v02-migration — Legacy catalog migration
-
-**Path:** [.agents/skills/okf-v02-migration/](../.agents/skills/okf-v02-migration/)
-
-Use **only** when migrating an existing OKF **v0.1** catalog to v0.2 layout. Not part of the database NL2SQL path.
-
----
-
-## End-to-end example (database → agent)
-
-```text
-# 1. Physical
-$okf-dbexplain sync prod-main to /data/okf/smartadmin
-
-# 2. Business (multi-round)
-$okf-bundle-business
-Bundle: /data/okf/smartadmin
-Task: token usage by department in May 2026
-… approve proposal …
-
-# 3. Local MCP for other agents
-okf --root /data/okf/smartadmin mcp
-# → configure Cursor / Claude Desktop stdio MCP
-
-# 4. (Optional) Publish runbooks to central server
-$okf-knowledge-publisher publish updated ops docs
-```
-
----
-
-## Register Skills in Cursor
-
-Point the project or user skills path at the repo (or copy `.agents/skills/` into your project). After registration, invoke with `$okf-dbexplain`, `$okf-bundle-business`, etc.
-
-See also: [OKF_CLI_SOURCE_INSTALL_UPDATE_ZH.md](OKF_CLI_SOURCE_INSTALL_UPDATE_ZH.md)
+Customize generic templates for the target business, then run every trigger
+query at least three times in each actual Agent Client and
+record whether the Skill was loaded. The host decides how to run evaluations;
+the Skills do not bind evaluation to one model or CLI.

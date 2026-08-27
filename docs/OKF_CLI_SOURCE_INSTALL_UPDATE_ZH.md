@@ -1,8 +1,10 @@
 # okf CLI 源码安装、命令注册与更新手册
 
-本文说明如何从源码安装本项目、把 `okf` 注册为系统命令，以及后续如何安全更新和回滚。本文同时说明 `okf` CLI 与 `okf-dbexplain`、`okf-bundle-business` Skill 的区别。
+本文说明如何从源码安装本项目、把 `okf` 注册为系统命令，以及后续如何安全更新和回滚。
+本文同时说明 `okf` CLI 与 `okf-dbexplain`、`okf-bundle-business`、`okf-nl2sql`
+Skill 的区别。
 
-## 1. 两个需要区分的概念
+## 1. 需要区分的独立能力
 
 ### 1.1 `okf` CLI
 
@@ -40,13 +42,28 @@ $okf-dbexplain 请检查 prod-main 数据库，并预览同步到 /data/okf/prod
 .agents/skills/okf-bundle-business/
 ```
 
-在已有 Bundle 上补充 business；需先完成 `okf-dbexplain` sync。
+在已有 query-ready Bundle 上增补或纠正 Business 知识。它只要求所需物理事实已经存在，
+不要求安装任何其它 Skill。
 
 ```text
-$okf-bundle-business 在 /data/okf/prod-database 上为 Agent 问数补充 business，表：taiyi_agent_run,t_employee
+$okf-bundle-business 给 /data/okf/prod-database 的客户数据集增加 buyer 别名，并补充订单状态枚举
 ```
 
-只注册 `okf` CLI 不等于全局安装 Skill；只加载 Skill 也不能替代 `okf` 和 `dbexplain` 可执行文件。
+### 1.4 `okf-nl2sql` Skill（问数执行）
+
+```text
+.agents/skills/okf-nl2sql/
+```
+
+从 OKF MCP 检索业务与物理 binding，组装并通过 dbexplain 执行只读 SQL。Bundle 信息
+不足时会做受限的实时 schema/聚合探测；用户不需要提供表名或字段名。
+
+```text
+$okf-nl2sql 查询上个月各门店退款后的实际销售额
+```
+
+只注册 `okf` CLI 不等于安装任何 Skill；只加载 Skill 也不能替代它声明需要的 CLI/MCP
+能力。每个 Skill 可以单独安装，不构成相互依赖。
 
 ## 2. 环境要求
 
@@ -233,6 +250,8 @@ ls -l "$(command -v okf)"
 
 ```text
 .agents/skills/okf-dbexplain/SKILL.md
+.agents/skills/okf-bundle-business/SKILL.md
+.agents/skills/okf-nl2sql/SKILL.md
 ```
 
 源码更新后，建议重新打开项目或创建新会话，再显式调用：
@@ -241,14 +260,18 @@ ls -l "$(command -v okf)"
 $okf-dbexplain 检查数据库配置，并预览更新数据库 Bundle
 ```
 
-如果希望从其他项目目录也能使用该 Skill，可以建立用户级 Skill 软链接：
+如果希望从其他项目目录也能使用某个 Skill，可以只为所需能力建立用户级软链接：
 
 ```bash
 CODEX_SKILL_ROOT="${CODEX_HOME:-$HOME/.codex}/skills"
 mkdir -p "$CODEX_SKILL_ROOT"
 ln -sfn "$PWD/.agents/skills/okf-dbexplain" "$CODEX_SKILL_ROOT/okf-dbexplain"
 ln -sfn "$PWD/.agents/skills/okf-bundle-business" "$CODEX_SKILL_ROOT/okf-bundle-business"
+ln -sfn "$PWD/.agents/skills/okf-nl2sql" "$CODEX_SKILL_ROOT/okf-nl2sql"
 ```
+
+上面三条命令彼此独立；不需要的 Skill 可以不链接。其它 Agent Host 使用其自身的 Skills
+目录和注册方式。
 
 仓库移动后需要重建该链接。若 Codex 尚未显示新 Skill，重新打开项目或新建会话，让 Skill 列表从磁盘刷新。
 
