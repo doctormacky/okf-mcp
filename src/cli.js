@@ -135,6 +135,8 @@ function parseArgs(argv) {
   let dbexplainBin = "dbexplain";
   let dbexplainInclude = "";
   let dbexplainExclude = "";
+  let dbexplainIncludeTables = "";
+  let dbexplainExcludeTables = "";
   let dbexplainTimeout = "20s";
   let dbexplainConn = 10;
   let bundleRoot = "";
@@ -253,6 +255,8 @@ function parseArgs(argv) {
       "--expect-plan": "expectPlan",
       "--include": "dbexplainInclude",
       "--exclude": "dbexplainExclude",
+      "--include-tables": "dbexplainIncludeTables",
+      "--exclude-tables": "dbexplainExcludeTables",
       "--timeout": "dbexplainTimeout",
     };
     if (Object.prototype.hasOwnProperty.call(dbexplainPathOptions, arg)) {
@@ -270,13 +274,16 @@ function parseArgs(argv) {
       else if (target === "expectPlan") expectPlan = value;
       else if (target === "dbexplainInclude") dbexplainInclude = value;
       else if (target === "dbexplainExclude") dbexplainExclude = value;
+      else if (target === "dbexplainIncludeTables") dbexplainIncludeTables = value;
+      else if (target === "dbexplainExcludeTables") dbexplainExcludeTables = value;
       else if (target === "dbexplainTimeout") dbexplainTimeout = value;
       index += 1;
       continue;
     }
     const dbexplainEqualsOptions = [
       "--dbexplain-env=", "--dbexplain-config=", "--dsn-env=", "--dbexplain-bin=",
-      "--bundle-root=", "--generated-at=", "--expect-plan=", "--include=", "--exclude=", "--timeout=",
+      "--bundle-root=", "--generated-at=", "--expect-plan=", "--include=", "--exclude=",
+      "--include-tables=", "--exclude-tables=", "--timeout=",
     ];
     const dbexplainEquals = dbexplainEqualsOptions.find((prefix) => arg.startsWith(prefix));
     if (dbexplainEquals) {
@@ -291,6 +298,8 @@ function parseArgs(argv) {
       else if (dbexplainEquals === "--expect-plan=") expectPlan = value;
       else if (dbexplainEquals === "--include=") dbexplainInclude = value;
       else if (dbexplainEquals === "--exclude=") dbexplainExclude = value;
+      else if (dbexplainEquals === "--include-tables=") dbexplainIncludeTables = value;
+      else if (dbexplainEquals === "--exclude-tables=") dbexplainExcludeTables = value;
       else if (dbexplainEquals === "--timeout=") dbexplainTimeout = value;
       continue;
     }
@@ -680,6 +689,8 @@ function parseArgs(argv) {
     dbexplainBin,
     dbexplainInclude,
     dbexplainExclude,
+    dbexplainIncludeTables,
+    dbexplainExcludeTables,
     dbexplainTimeout,
     dbexplainConn,
     bundleRoot,
@@ -949,6 +960,8 @@ function dbexplainUsage() {
     "  Query-ready kinds: mysql, postgres, gaussdb, sqlite, oracle.",
     "  --include <label-or-kind>   Include comma-separated stable labels or SQL kinds.",
     "  --exclude <label-or-kind>   Exclude comma-separated stable labels or SQL kinds.",
+    "  --include-tables <glob,...> Sync only tables whose name matches a glob (supports * and ?).",
+    "  --exclude-tables <glob,...> Skip tables whose name matches a glob during sync.",
     "  --timeout <duration>        Per-database collection timeout (default: 20s).",
     "  --conn <n>                  Collection concurrency from 1 through 100 (default: 10).",
     "",
@@ -967,6 +980,8 @@ function dbexplainCommandConfig(args, runtime) {
     dbexplainBin: args.dbexplainBin,
     include: args.dbexplainInclude,
     exclude: args.dbexplainExclude,
+    includeTables: args.dbexplainIncludeTables,
+    excludeTables: args.dbexplainExcludeTables,
     timeout: args.dbexplainTimeout,
     conn: args.dbexplainConn,
     bundleRoot: args.bundleRoot,
@@ -1049,6 +1064,8 @@ function runDbExplainCommand(args, runtime) {
     if (args.dryRun === Boolean(args.expectPlan)) {
       throw usageError("dbexplain sync requires exactly one of --dry-run or --expect-plan <sha256:digest>.");
     }
+  } else if (args.dbexplainIncludeTables || args.dbexplainExcludeTables) {
+    throw usageError(`dbexplain ${operation} does not accept table filtering options; --include-tables/--exclude-tables apply to sync.`);
   }
   const config = dbexplainCommandConfig(args, runtime);
   const result = operation === "inspect"

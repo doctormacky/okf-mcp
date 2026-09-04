@@ -1034,6 +1034,50 @@ function normalizeSnapshot(text, options) {
   return model;
 }
 
+function globPatternToRegex(pattern) {
+  const source = String(pattern || "").replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+  return new RegExp(`^${source}$`);
+}
+
+function parseTablePatterns(value) {
+  return String(value || "").split(",").map((entry) => entry.trim()).filter(Boolean);
+}
+
+function applyTableFilter(model, config) {
+  const includes = parseTablePatterns(config && config.includeTables);
+  const excludes = parseTablePatterns(config && config.excludeTables);
+  if (!includes.length && !excludes.length) {
+    return model;
+  }
+  const matches = (table) => {
+    const name = String((table && table.name) || "");
+    if (includes.length && !includes.some((pattern) => globPatternToRegex(pattern).test(name))) {
+      return false;
+    }
+    if (excludes.some((pattern) => globPatternToRegex(pattern).test(name))) {
+      return false;
+    }
+    return true;
+  };
+  const keptKeys = new Set();
+  model.tables.forEach((table) => {
+    if (matches(table)) keptKeys.add(tableKey(table.identity));
+  });
+  model.tables = model.tables.filter((table) => keptKeys.has(tableKey(table.identity)));
+  model.instances.forEach((instance) => instance.databases.forEach((database) => {
+    database.tables = database.tables.filter((table) => keptKeys.has(tableKey(table.identity)));
+  }));
+  const keepRelationship = (relationship) => (
+    keptKeys.has(tableKey(relationship.from.identity)) && keptKeys.has(tableKey(relationship.to.identity))
+  );
+  model.declaredRelationships = model.declaredRelationships.filter(keepRelationship);
+  model.inferredRelationships = model.inferredRelationships.filter(keepRelationship);
+  model.groups = model.groups
+    .map((group) => Object.assign({}, group, { tables: group.tables.filter((identity) => keptKeys.has(tableKey(identity))) }))
+    .filter((group) => group.tables.length > 0);
+  return model;
+}
+
 function sanitizeProcessText(value, secrets) {
   let text = String(value || "");
   (secrets || []).filter(Boolean).forEach((secret) => {
@@ -3658,6 +3702,7 @@ function syncDbExplain(config) {
     throw new DbExplainError("Apply requires --expect-plan <sha256:digest> from a dry-run.", "missing_expected_plan");
   }
   const capture = collectDbExplain(config);
+  applyTableFilter(capture.model, config);
   let release = null;
   try {
     if (!config.dryRun) release = acquireLock(root);
@@ -3717,6 +3762,7 @@ module.exports = {
   GENERATOR,
   IDENTITY_VERSION,
   SQL_KINDS,
+  applyTableFilter,
   assertSupportedDbExplainVersion,
   buildBundleCandidate,
   canonicalJson,
