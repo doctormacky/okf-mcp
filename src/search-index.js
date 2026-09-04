@@ -23,8 +23,34 @@ const SEARCH_BOOSTS = Object.freeze({
   body: 1,
 });
 const SEARCH_INDEXES = new WeakMap();
-const tokenize = MiniSearch.getDefault("tokenize");
+const ORIGINAL_TOKENIZE = MiniSearch.getDefault("tokenize");
 const processTerm = MiniSearch.getDefault("processTerm");
+const CJK_SEGMENT_RE = /([\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]+)/g;
+const CJK_CHAR_RE = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/;
+
+function tokenizeCJK(value) {
+  const tokens = [];
+  const parts = String(value || "").split(CJK_SEGMENT_RE);
+  for (const part of parts) {
+    if (!part) {
+      continue;
+    }
+    if (CJK_CHAR_RE.test(part)) {
+      const chars = Array.from(part);
+      if (chars.length === 1) {
+        tokens.push(chars[0]);
+      } else {
+        for (let i = 0; i < chars.length - 1; i += 1) {
+          tokens.push(chars[i] + chars[i + 1]);
+        }
+      }
+    } else {
+      tokens.push(...ORIGINAL_TOKENIZE(part));
+    }
+  }
+  return tokens;
+}
+const tokenize = tokenizeCJK;
 
 function queryTerms(query) {
   return tokenize(String(query || ""))
@@ -65,6 +91,7 @@ function prepareSearchIndex(index) {
   searchIndex = new MiniSearch({
     fields: SEARCH_FIELDS,
     idField: "id",
+    tokenize: tokenizeCJK,
     searchOptions: {
       boost: SEARCH_BOOSTS,
       combineWith: "AND",
