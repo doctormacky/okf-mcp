@@ -18,6 +18,7 @@ const { callJson, connectMcp } = require("./mcp-client");
 const { legacyOverlayScaffoldFiles } = require("../src/dbexplain-overlay-guides");
 const {
   DbExplainError,
+  applyTableFilter,
   assertSupportedDbExplainVersion,
   buildBundleCandidate,
   checkDbExplain,
@@ -1314,4 +1315,39 @@ test("overlay-draft requires explicit scope", (t) => {
     () => draftDbExplainOverlay({ bundleRoot, dryRun: true }),
     (error) => error instanceof DbExplainError && error.code === "missing_overlay_scope",
   );
+});
+
+test("applyTableFilter keeps only matched tables and drops dangling relationships", () => {
+  const identity = (table) => ({ instance: "prod-main", database: "app", table });
+  const table = (name) => ({ name, identity: identity(name) });
+  const relationship = (from, to) => ({
+    identity: { kind: "declared", from: identity(from), from_columns: [], to: identity(to), to_columns: [] },
+    from: table(from),
+    to: table(to),
+  });
+  const allTables = [table("users"), table("orders"), table("audit_events")];
+  const model = () => ({
+    instances: [{ label: "prod-main", databases: [{ name: "app", tables: allTables.slice() }] }],
+    tables: allTables.slice(),
+    declaredRelationships: [relationship("orders", "users")],
+    inferredRelationships: [relationship("audit_events", "users")],
+    groups: [{ name: "app", tables: ["users", "orders", "audit_events"].map(identity) }],
+  });
+
+  const included = applyTableFilter(model(), { includeTables: "users,orders" });
+  assert.deepEqual(included.tables.map((table) => table.name).sort(), ["orders", "users"]);
+  assert.deepEqual(included.instances[0].databases[0].tables.map((table) => table.name).sort(), ["orders", "users"]);
+  assert.equal(included.declaredRelationships.length, 1);
+  assert.equal(included.inferredRelationships.length, 0);
+  assert.deepEqual(included.groups[0].tables.map((entry) => entry.table).sort(), ["orders", "users"]);
+
+  const globbed = applyTableFilter(model(), { includeTables: "u*,o*" });
+  assert.deepEqual(globbed.tables.map((table) => table.name).sort(), ["orders", "users"]);
+
+  const excluded = applyTableFilter(model(), { excludeTables: "audit_*" });
+  assert.deepEqual(excluded.tables.map((table) => table.name).sort(), ["orders", "users"]);
+  assert.equal(excluded.inferredRelationships.length, 0);
+
+  const unfiltered = applyTableFilter(model(), {});
+  assert.equal(unfiltered.tables.length, 3);
 });
